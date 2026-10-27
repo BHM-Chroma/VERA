@@ -1,0 +1,21 @@
+# Godot
+godot/.godot/
+godot/build/
+*.import.bak
+
+# Мозг: личное и рабочее
+brain/.venv/
+brain/.env
+brain/config.local.json
+brain/memory.json
+brain/auto_program_paths.json
+brain/brain.log
+brain/models/
+brain/build/
+brain/dist/
+__pycache__/
+*.pyc
+
+# Сборки
+dist/
+*.zip
