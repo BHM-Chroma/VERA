@@ -5,6 +5,7 @@
 задач, свёрнутые, развёрнутые и полноэкранные окна не подходят.
 """
 import ctypes
+import os
 import sys
 
 IS_WINDOWS = sys.platform == "win32"
@@ -52,8 +53,23 @@ SKIP_CLASSES = {
     "Windows.UI.Core.CoreWindow", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland",
     "XamlExplorerHostIslandWindow", "ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS",
 }
-SKIP_PROCESSES = ("godot", "python", "pythonw", "shellexperiencehost", "searchhost",
+SKIP_PROCESSES = ("godot", "veronika", "python", "pythonw", "shellexperiencehost", "searchhost",
                   "startmenuexperiencehost", "textinputhost", "lockapp")
+
+# PID процессов самого персонажа (и мозга): на свои окна садиться нельзя,
+# иначе она садится на себя, сдвигает своё окно и «едет» за ним вверх без конца.
+OWN_PIDS = {os.getpid()}
+
+
+def set_own_pid(pid):
+    if pid:
+        OWN_PIDS.add(int(pid))
+
+
+def _pid(hwnd):
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
 MIN_W, MIN_H = 300, 150
 
 
@@ -100,6 +116,8 @@ def describe(hwnd):
     if cls.value in SKIP_CLASSES:
         return None
     if user32.GetWindowTextLengthW(hwnd) == 0:
+        return None
+    if _pid(hwnd) in OWN_PIDS:
         return None
     proc = _process_name(hwnd)
     if proc.startswith(SKIP_PROCESSES):

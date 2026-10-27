@@ -54,4 +54,5 @@ foreach ($o in @($old, $old2)) {
 Set-Content $verFile $latest
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Готово! Установлена версия $latest. Запускаю..."
-Start-Process (Join-Path $Dir 'VERONIKA.exe')
+# через Проводник, чтобы программа не была привязана к этому окну консоли
+Start-Process explorer.exe -ArgumentList ('"' + (Join-Path $Dir 'VERONIKA.exe') + '"')

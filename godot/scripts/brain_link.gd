@@ -42,7 +42,7 @@ func _process(delta: float) -> void:
 	if state == WebSocketPeer.STATE_OPEN and not connected:
 		connected = true
 		connection_changed.emit(true)
-		send({"type": "hello", "client": "godot"})
+		send({"type": "hello", "client": "godot", "pid": OS.get_process_id()})
 	# читаем пакеты и при закрытии: последнее сообщение («quit») приходит вместе с ним
 	while _ws.get_available_packet_count() > 0:
 		var text := _ws.get_packet().get_string_from_utf8()

@@ -33,6 +33,7 @@ var _follow_off := Vector2i.ZERO      # смещение нашего окна �
 var _follow_win := Rect2i()
 var _follow_timer := 0.0
 var _last_side := 1                   # -1 левый угол, 1 правый
+var _head_offset := 0.0               # где макушка в окне персонажа (пиксели)
 
 
 func _ready() -> void:
@@ -146,7 +147,7 @@ func _try_place_on_window() -> bool:
 	if reply == null or not (reply.get("window") is Dictionary):
 		return false
 	var win := _to_godot_rect(reply["window"])
-	if win.size.x < 300:
+	if win.size.x < 300 or _is_own_window(win):
 		return false
 
 	var m := await _apply_pose(window_pose)
@@ -167,6 +168,7 @@ func _try_place_on_window() -> bool:
 	var pos := Vector2i(seat_screen_x - int(seat.x), win.position.y - int(seat.y + seat_pad))
 	DisplayServer.window_set_position(pos)
 
+	_head_offset = bbox.position.y
 	_follow_hwnd = int(reply["window"].get("hwnd", 0))
 	_follow_win = win
 	_follow_off = pos - win.position
@@ -190,14 +192,25 @@ func _check_follow() -> void:
 	var win := _to_godot_rect(w)
 	if win == _follow_win:
 		return
+	if _is_own_window(win):
+		_follow_hwnd = 0
+		wander(true)
+		return
 	# окно сдвинули или изменили размер — едем вместе с ним
 	var off := _follow_off
 	if win.size.x != _follow_win.size.x:
 		var rel: float = float(off.x) / maxf(1.0, float(_follow_win.size.x))
 		off.x = int(rel * win.size.x)
+	var target := win.position + off
+	# окно уехало так, что ей негде сидеть (голова за краем экрана) — уходим в угол
+	var scr := _screen_for(win)
+	if target.y + int(_head_offset) < scr.position.y or not scr.intersects(Rect2i(target, main.window_size)):
+		_follow_hwnd = 0
+		wander(true)
+		return
 	_follow_win = win
 	_follow_off = off
-	DisplayServer.window_set_position(win.position + off)
+	DisplayServer.window_set_position(target)
 
 
 ## Координаты Windows -> координаты Godot (с учётом нескольких мониторов).
@@ -213,3 +226,11 @@ func _screen_for(r: Rect2i) -> Rect2i:
 		if sr.has_point(Vector2i(c.x, r.position.y)) or sr.has_point(c):
 			return sr
 	return _screen_rect()
+
+
+## Защита: не садиться на собственное окно (иначе она «едет» за собой вверх).
+func _is_own_window(win: Rect2i) -> bool:
+	var own := Rect2i(DisplayServer.window_get_position(), DisplayServer.window_get_size())
+	var d_pos := (own.position - win.position).abs()
+	var d_size := (own.size - win.size).abs()
+	return d_pos.x <= 8 and d_pos.y <= 8 and d_size.x <= 8 and d_size.y <= 8

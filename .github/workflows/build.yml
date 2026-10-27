@@ -107,7 +107,9 @@ jobs:
           mkdir -p "$P/brain"
           cp art/godot/VERONIKA.exe "$P/"
           cp -r art/brain/. "$P/brain/"
-          cp brain/config.json brain/config.local.example.json brain/.env.example "$P/brain/"
+          cp brain/config.json brain/config.local.example.json "$P/brain/"
+          if [ -f brain/.env.example ]; then cp brain/.env.example "$P/brain/"; \
+          else printf '# Скопируй в .env и впиши ключ OpenAI\nOPENAI_API_KEY=sk-...\n' > "$P/brain/.env.example"; fi
           cp release/* "$P/"
           sed -i "s#__REPO__#${{ github.repository }}#" "$P/update.ps1"
           echo "$VER" > "$P/version.txt"

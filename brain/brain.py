@@ -124,6 +124,7 @@ class Brain:
     async def on_message(self, msg):
         kind = msg.get("type")
         if kind == "hello":
+            windows_info.set_own_pid(msg.get("pid"))
             await self.broadcast({"type": "stats", **self.monitor.stats})
         elif kind == "chat":
             text = str(msg.get("text", ""))
