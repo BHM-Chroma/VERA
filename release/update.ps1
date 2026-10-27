@@ -1,6 +1,8 @@
 ﻿# Обновление VERONIKA Mate: скачивает последнюю сборку с GitHub.
 # Твои личные файлы (.env, config.local.json, память диалогов, лог) не трогаются.
 $ErrorActionPreference = 'Stop'
+# без полосы прогресса PowerShell 5 качает в разы быстрее
+$ProgressPreference = 'SilentlyContinue'
 $Repo = '__REPO__'
 $Dir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
