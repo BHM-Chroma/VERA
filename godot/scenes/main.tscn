@@ -1,0 +1,37 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/character.gd" id="2_char"]
+[ext_resource type="Script" path="res://scripts/brain_link.gd" id="3_brain"]
+[ext_resource type="Script" path="res://scripts/speech_bubble.gd" id="4_bubble"]
+
+[sub_resource type="Environment" id="Env_1"]
+background_mode = 1
+background_color = Color(0, 0, 0, 0)
+ambient_light_source = 1
+tonemap_mode = 4
+tonemap_white = 6.0
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_1")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.1, 10)
+projection = 1
+size = 6.4
+near = 0.1
+far = 50.0
+
+[node name="Character" type="Node3D" parent="."]
+script = ExtResource("2_char")
+
+[node name="BrainLink" type="Node" parent="."]
+script = ExtResource("3_brain")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Bubble" type="PanelContainer" parent="UI"]
+script = ExtResource("4_bubble")

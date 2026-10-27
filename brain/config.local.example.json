@@ -1,0 +1,16 @@
+{
+    "_comment": "Скопируй в config.local.json и меняй под себя. Любой ключ отсюда перекрывает config.json; обновления этот файл не трогают.",
+    "links": {
+        "my_link": {
+            "phrases": [
+                "открой мой сайт",
+                "мой сайт"
+            ],
+            "url": "https://example.com",
+            "reply": "Открываю"
+        }
+    },
+    "monitor": {
+        "ram_alert": 95
+    }
+}

@@ -1,0 +1,11 @@
+websockets>=12
+psutil
+requests
+rapidfuzz
+SpeechRecognition
+PyAudio
+vosk
+pycaw
+comtypes
+wmi
+keyboard

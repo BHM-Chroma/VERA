@@ -1,0 +1,71 @@
+{
+    "name": "VERONIKA",
+    "creator": "BEHEMOTH",
+    "ws_host": "127.0.0.1",
+    "ws_port": 8765,
+    "llm": {
+        "mode": "auto",
+        "online_model": "gpt-4o-mini",
+        "offline_model": "qwen2.5:7b",
+        "ollama_url": "http://127.0.0.1:11434",
+        "history_size": 20
+    },
+    "voice": {
+        "enabled": true,
+        "mode": "online",
+        "vosk_model_path": "models/vosk-model-small-ru-0.22",
+        "require_wake_word": true,
+        "conversation_window_sec": 10,
+        "phrase_time_limit": 6
+    },
+    "monitor": {
+        "interval_sec": 2,
+        "cpu_alert": 90,
+        "ram_alert": 90,
+        "gpu_temp_alert": 85,
+        "alert_after_sec": 20,
+        "alert_cooldown_sec": 300
+    },
+    "aliases": [
+        "вероника",
+        "вера",
+        "вира",
+        "veronika",
+        "vira"
+    ],
+    "filler_words": [
+        "скажи",
+        "расскажи",
+        "покажи",
+        "сколько",
+        "произнеси",
+        "пожалуйста"
+    ],
+    "yes_words": [
+        "да",
+        "подтверждаю",
+        "давай",
+        "конечно",
+        "ага"
+    ],
+    "links": {
+        "whatsapp": {
+            "phrases": [
+                "включи ватсап",
+                "ватсап",
+                "открой whatsapp"
+            ],
+            "url": "https://web.whatsapp.com/",
+            "reply": "Открываю WhatsApp"
+        },
+        "telegram": {
+            "phrases": [
+                "включи тг",
+                "телеграм",
+                "открой телеграм"
+            ],
+            "url": "https://web.telegram.org/a/",
+            "reply": "Открываю Telegram"
+        }
+    }
+}
