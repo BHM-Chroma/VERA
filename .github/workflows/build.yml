@@ -1,0 +1,127 @@
+# Автосборка VERONIKA Mate: при каждом изменении в main собирает
+# VERONIKA.exe (Godot) и VeronikaBrain.exe (Python) и выкладывает релиз.
+# «Обновить.bat» на ПК скачивает последний релиз отсюда.
+name: Сборка
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: "4.5.1"
+
+jobs:
+  godot:
+    name: Персонаж (Godot → VERONIKA.exe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Кэш Godot
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-cache
+          key: godot-${{ env.GODOT_VERSION }}-win-templates
+
+      - name: Скачать Godot и шаблоны экспорта
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-cache/templates && cd ~/godot-cache
+          base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable
+          wget -q $base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip
+          unzip -q Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip
+          wget -q $base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz
+          unzip -q -j Godot_v${GODOT_VERSION}-stable_export_templates.tpz \
+            templates/windows_release_x86_64.exe templates/windows_debug_x86_64.exe templates/version.txt \
+            -d templates
+          rm -f *.tpz *.zip
+
+      - name: Экспорт для Windows
+        run: |
+          T=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mkdir -p $T && cp ~/godot-cache/templates/* $T/
+          G=~/godot-cache/Godot_v${GODOT_VERSION}-stable_linux.x86_64
+          $G --headless --path godot --import || true
+          mkdir -p godot/build
+          $G --headless --path godot --export-release "Windows Desktop" build/VERONIKA.exe
+          test -s godot/build/VERONIKA.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot
+          path: godot/build/VERONIKA.exe
+
+  brain:
+    name: Мозг (Python → VeronikaBrain.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Зависимости
+        working-directory: brain
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Проверка импорта
+        working-directory: brain
+        run: python -c "import brain, commands, llm, monitor, voice, windows_info, memory, paths; print('ok')"
+
+      - name: Сборка
+        working-directory: brain
+        run: >
+          pyinstaller --noconfirm --clean --onedir --noconsole --name VeronikaBrain
+          --collect-all vosk --collect-data speech_recognition
+          --hidden-import pycaw.pycaw --hidden-import win32timezone
+          brain.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brain
+          path: brain/dist/VeronikaBrain
+
+  release:
+    name: Релиз
+    needs: [godot, brain]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+
+      - name: Упаковка
+        run: |
+          VER="v1.0.${{ github.run_number }}"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          P=pkg/VERONIKA
+          mkdir -p "$P/brain"
+          cp art/godot/VERONIKA.exe "$P/"
+          cp -r art/brain/. "$P/brain/"
+          cp brain/config.json brain/config.local.example.json brain/.env.example "$P/brain/"
+          cp release/* "$P/"
+          sed -i "s#__REPO__#${{ github.repository }}#" "$P/update.ps1"
+          echo "$VER" > "$P/version.txt"
+          cp README.md "$P/"
+          (cd pkg && zip -qr ../VERONIKA-windows.zip VERONIKA)
+          ls -la VERONIKA-windows.zip
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VER }}
+          name: VERONIKA ${{ env.VER }}
+          files: VERONIKA-windows.zip
+          make_latest: true
+          body: |
+            Автоматическая сборка из коммита ${{ github.sha }}.
+            Первая установка: распакуй архив и запусти VERONIKA.exe.
+            Обновление: запусти «Обновить.bat» в папке программы.
