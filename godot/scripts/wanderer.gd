@@ -114,6 +114,39 @@ func wander(force_corner := false) -> void:
 	reset_timer()
 
 
+## Сон: из любой позы рассыпается и ложится спать (idle_sleep) в нижнем углу.
+func go_to_sleep() -> void:
+	while busy:
+		await get_tree().process_frame
+	if not character.has_animation("sleep"):
+		return
+	busy = true
+	_stop_follow()
+	await _fade(1.0)
+	await place_in_corner("sleep", _last_side)
+	await _fade(0.0)
+	busy = false
+
+
+func is_sleeping_pose() -> bool:
+	return character.has_animation("sleep") and \
+		character.current_pose == character._resolve_animation("sleep")
+
+
+## Проснулась — встаёт там же, в углу.
+func wake_up() -> void:
+	while busy:
+		await get_tree().process_frame
+	if not is_sleeping_pose():
+		return
+	busy = true
+	await _fade(1.0)
+	await place_in_corner(character.idle_animation, _last_side)
+	await _fade(0.0)
+	busy = false
+	reset_timer()
+
+
 func _fade(to: float) -> void:
 	var tw := create_tween()
 	tw.tween_property(character, "vanish", to, vanish_time).set_trans(Tween.TRANS_SINE)

@@ -465,9 +465,14 @@ func _on_brain_message(msg: Dictionary) -> void:
 			if msg.has("anim") and character.current_pose == character.idle_animation:
 				character.play(String(msg.anim))
 		"anim":
-			# разовые анимации (alarm и т.п.) — только когда стоит, а не сидит/лежит
-			if character.current_pose == character.idle_animation:
-				character.play(String(msg.get("name", "idle")))
+			var anim_name := String(msg.get("name", "idle"))
+			if anim_name == "sleep":
+				wanderer.go_to_sleep()       # из любой позы — в idle_sleep в углу
+			elif anim_name == "idle" and wanderer.is_sleeping_pose():
+				wanderer.wake_up()
+			elif character.current_pose == character.idle_animation:
+				# разовые анимации (alarm и т.п.) — только когда стоит, а не сидит/лежит
+				character.play(anim_name)
 		"speak_start":
 			character.set_talking(true)
 			_talk_left = 0.0
