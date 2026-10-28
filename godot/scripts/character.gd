@@ -73,9 +73,7 @@ func _ready() -> void:
 		anim.animation_finished.connect(_on_animation_finished)
 		for anim_name in anim.get_animation_list():
 			var a := anim.get_animation(anim_name)
-			var lname := anim_name.to_lower()
-			if lname.begins_with("idle") or lname.begins_with("sleep") or lname.begins_with("pose"):
-				a.loop_mode = Animation.LOOP_LINEAR
+			a.loop_mode = Animation.LOOP_LINEAR if is_looping_name(anim_name) else Animation.LOOP_NONE
 			_make_face_track_stepped(a)
 	play(idle_animation)
 
@@ -206,6 +204,28 @@ func set_light_direction(dir: Vector3) -> void:
 
 # ---------- анимации ----------
 
+## Старые и короткие имена -> анимации из модели (берётся первая найденная).
+const ALIASES := {
+	"sleep": ["idle_sleep", "sleep"],
+	"wave": ["idle_wave_start", "wave"],
+	"drag": ["drag_sit", "drag"],
+}
+## Анимации, которые играются один раз, даже если имя начинается на idle.
+const ONE_SHOT_WORDS := ["wave", "alarm", "_start"]
+
+
+## Зацикленные: idle…, sleep…, pose…, drag… (кроме разовых: махание, тревога…).
+static func is_looping_name(anim_name: String) -> bool:
+	var lname := anim_name.to_lower()
+	for w in ONE_SHOT_WORDS:
+		if lname.contains(w):
+			return false
+	for p in ["idle", "sleep", "pose", "drag"]:
+		if lname.begins_with(p):
+			return true
+	return false
+
+
 ## Сменить позу (зацикленную анимацию). Возвращает false, если такой нет.
 func set_pose(pose: String, blend := 0.25) -> bool:
 	var found := _resolve_animation(pose) if anim else ""
@@ -232,9 +252,11 @@ func has_animation(anim_name: String) -> bool:
 
 
 func _resolve_animation(anim_name: String) -> String:
-	for a in anim.get_animation_list():
-		if a.to_lower() == anim_name.to_lower():
-			return a
+	var wanted: Array = ALIASES.get(anim_name.to_lower(), [anim_name])
+	for w in wanted:
+		for a in anim.get_animation_list():
+			if a.to_lower() == String(w).to_lower():
+				return a
 	return ""
 
 
@@ -253,17 +275,24 @@ func _on_animation_finished(anim_name: StringName) -> void:
 		play(current_pose)
 
 
+## Её взяли мышкой: садится (drag_sit), модель плавно возвращается в центр окна.
 func start_drag() -> void:
-	play("drag", 0.15)
+	if not set_pose("drag", 0.18):
+		set_pose(idle_animation, 0.18)
+	_tween_to_center(0.15)
 
 
+## Отпустили: встаёт в обычную позу.
 func end_drag() -> void:
-	# куда бы её ни поставили — встаёт в обычную позу
-	if not position.is_zero_approx():
-		position = Vector3.ZERO   # idle и так стоит по центру окна
-		set_pose(idle_animation, 0.0)
-	else:
-		set_pose(idle_animation, 0.2)
+	set_pose(idle_animation, 0.3)
+	_tween_to_center(0.2)
+
+
+func _tween_to_center(time: float) -> void:
+	if position.is_zero_approx():
+		return
+	var tw := create_tween()
+	tw.tween_property(self, "position", Vector3.ZERO, time).set_trans(Tween.TRANS_SINE)
 
 
 ## Сдвигает модель так, чтобы текущая поза была по центру окна

@@ -32,6 +32,12 @@ var _follow_hwnd := 0
 var _follow_off := Vector2i.ZERO      # смещение нашего окна от угла чужого окна
 var _follow_win := Rect2i()
 var _follow_timer := 0.0
+var _follow_pending := false          # запрос к мозгу уже в пути
+var _follow_pos := Vector2.ZERO       # где сейчас наше окно (дробно, для плавности)
+var _follow_target := Vector2.ZERO    # куда ему надо
+## Как часто спрашивать, где окно (сек), и как быстро догонять его.
+@export var follow_poll := 0.033
+@export var follow_speed := 22.0
 var _last_side := 1                   # -1 левый угол, 1 правый
 var _head_offset := 0.0               # где макушка в окне персонажа (пиксели)
 
@@ -66,9 +72,10 @@ func _process(delta: float) -> void:
 		return
 	if _follow_hwnd != 0:
 		_follow_timer -= delta
-		if _follow_timer <= 0.0:
-			_follow_timer = 0.25
+		if _follow_timer <= 0.0 and not _follow_pending:
+			_follow_timer = follow_poll
 			_check_follow()
+		_glide(delta)
 	if not enabled or not main.is_idle():
 		return
 	_timer -= delta
@@ -172,13 +179,29 @@ func _try_place_on_window() -> bool:
 	_follow_hwnd = int(reply["window"].get("hwnd", 0))
 	_follow_win = win
 	_follow_off = pos - win.position
-	_follow_timer = 0.25
+	_follow_pos = Vector2(pos)
+	_follow_target = _follow_pos
+	_follow_timer = follow_poll
 	return true
+
+
+## Плавно подтягиваем своё окно к нужному месту (а не прыжком).
+func _glide(delta: float) -> void:
+	var d := _follow_target - _follow_pos
+	if d.length_squared() < 0.25:
+		if _follow_pos != _follow_target:
+			_follow_pos = _follow_target
+			DisplayServer.window_set_position(Vector2i(_follow_pos.round()))
+		return
+	_follow_pos = _follow_pos.lerp(_follow_target, 1.0 - exp(-follow_speed * delta))
+	DisplayServer.window_set_position(Vector2i(_follow_pos.round()))
 
 
 func _check_follow() -> void:
 	var hwnd := _follow_hwnd
+	_follow_pending = true
 	var reply = await main.brain.request({"type": "window_query", "hwnd": hwnd}, 1.0)
+	_follow_pending = false
 	if hwnd != _follow_hwnd or busy:
 		return
 	if reply == null:
@@ -210,7 +233,7 @@ func _check_follow() -> void:
 		return
 	_follow_win = win
 	_follow_off = off
-	DisplayServer.window_set_position(target)
+	_follow_target = Vector2(target)
 
 
 ## Координаты Windows -> координаты Godot (с учётом нескольких мониторов).

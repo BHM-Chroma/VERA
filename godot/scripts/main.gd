@@ -27,6 +27,20 @@ var _talk_left := 0.0
 var _settings := ConfigFile.new()
 var _sleeping := false
 var wanderer: Wanderer
+var platform: Platform
+
+## Переноска: плита под ней плавно догоняет курсор.
+@export var carry_follow_speed := 16.0
+## Курсор на плите: столько пикселей ниже кости таза (минус — выше).
+@export var carry_cursor_offset := -6.0
+## На какой высоте окна (пиксели сверху) стоит плита во время переноски.
+@export var carry_seat_y := 430.0
+## Зазор между нижними костями позы и верхом плиты (пиксели; толщина ног/подошв).
+@export var carry_plate_gap := 6.0
+var _carry := false
+var _carry_pos := Vector2.ZERO        # позиция окна (дробная, для плавности)
+var _carry_grab := Vector2.ZERO       # точка в окне, которая должна быть под курсором
+var _carry_ready := false             # плита уже стоит под ней
 
 enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW }
 
@@ -46,6 +60,9 @@ func _ready() -> void:
 	wanderer.name = "Wanderer"
 	add_child(wanderer)
 	wanderer.set_enabled(bool(_settings.get_value("wander", "enabled", true)))
+	platform = Platform.new()
+	platform.name = "Platform"
+	add_child(platform)
 	_restore_position()
 	_build_menu()
 	_build_chat_window()
@@ -53,11 +70,19 @@ func _ready() -> void:
 	brain.connection_changed.connect(_on_brain_connection)
 	_start_brain_if_bundled()
 	say("Привет! Я на месте.", 3.0)
+	_wave_hello()
 
 	var args := OS.get_cmdline_user_args()
 	for a in args:
 		if a.begins_with("--screenshot="):
 			_debug_screenshot(a.get_slice("=", 1))
+
+
+## При запуске машет рукой (idle_Wave_start), потом встаёт в idle.
+func _wave_hello() -> void:
+	await get_tree().create_timer(0.3).timeout
+	if character.current_pose == character.idle_animation and not _dragging:
+		character.play("wave", 0.2)
 
 
 # ---------- запуск мозга ----------
@@ -118,6 +143,8 @@ func _save_position() -> void:
 # ---------- сквозные клики ----------
 
 func _process(delta: float) -> void:
+	if _carry:
+		_update_carry(delta)
 	_pt_timer -= delta
 	if _pt_timer <= 0.0 and not _dragging:
 		_pt_timer = passthrough_interval
@@ -172,6 +199,8 @@ func _input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				if wanderer.busy:
+					return   # она как раз рассыпается/собирается — не хватаем
 				_dragging = true
 				_moved = false
 				_press_pos = DisplayServer.mouse_get_position()
@@ -181,9 +210,7 @@ func _input(event: InputEvent) -> void:
 			elif _dragging:
 				_dragging = false
 				if _moved:
-					character.end_drag()
-					wanderer.on_user_moved()
-					_save_position()
+					_end_carry()
 				else:
 					_on_poke()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
@@ -195,9 +222,89 @@ func _input(event: InputEvent) -> void:
 		var m := DisplayServer.mouse_get_position()
 		if not _moved and (m - _press_pos).length() > 4:
 			_moved = true
-			character.start_drag()
-		if _moved:
-			DisplayServer.window_set_position(m - _drag_offset)
+			_begin_carry()
+
+
+# ---------- переноска на плите ----------
+
+func _begin_carry() -> void:
+	wanderer.on_user_moved()
+	_carry = true
+	_carry_ready = false
+	_carry_pos = Vector2(DisplayServer.window_get_position())
+	_carry_grab = Vector2(_drag_offset)
+	character.start_drag()
+	# ждём, пока она сядет, и ставим плиту под таз
+	await get_tree().create_timer(0.2).timeout
+	if not _carry:
+		return
+	var m := character.pose_metrics(camera)
+	if m.is_empty():
+		return
+	var seat: Vector2 = m["seat"]
+	var bbox: Rect2 = m["bbox"]
+	# верх плиты — под самыми нижними костями позы (ноги лежат на плите), размер — по ширине позы
+	var top := Vector2(seat.x, bbox.end.y + carry_plate_gap)
+	var px_per_unit := float(window_size.y) / camera.size
+	platform.set_radius(clampf(bbox.size.x * 0.42 / px_per_unit, 0.5, 1.3))
+	# плита — дочерняя у персонажа: куда сдвинем её, туда и плиту
+	if platform.get_parent() != character:
+		platform.reparent(character, false)
+	platform.global_position = camera.project_position(top, camera.global_position.z) \
+		+ Vector3(0.0, -platform.thickness * 0.5, 0.0)
+	platform.appear()
+	# поднимаем её так, чтобы плита была на уровне carry_seat_y (а не у нижнего края окна)
+	var dy := top.y - carry_seat_y
+	if absf(dy) > 2.0:
+		var tw := create_tween()
+		tw.tween_property(character, "position:y", character.position.y + dy / px_per_unit, 0.2) \
+			.set_trans(Tween.TRANS_SINE)
+		top.y -= dy
+	_carry_grab = top + Vector2(0.0, -carry_cursor_offset)
+	_carry_ready = true
+
+
+func _end_carry() -> void:
+	_carry = false
+	_carry_ready = false
+	platform.disappear()
+	character.end_drag()
+	wanderer.on_user_moved()
+	await get_tree().create_timer(0.35).timeout
+	if _carry:
+		return   # её уже снова схватили
+	await _keep_on_screen()
+	_save_position()
+
+
+## После того как её поставили: ноги не под панелью задач, голова не за краем.
+func _keep_on_screen() -> void:
+	var m := character.pose_metrics(camera)
+	if m.is_empty():
+		return
+	var bbox: Rect2 = m["bbox"]
+	var r := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	var pos := DisplayServer.window_get_position()
+	var to := pos
+	to.y = mini(to.y, r.end.y - int(bbox.end.y + wanderer.foot_pad))
+	to.y = maxi(to.y, r.position.y - int(bbox.position.y) + 10)
+	to.x = clampi(to.x, r.position.x - int(bbox.position.x) + 8, r.end.x - int(bbox.end.x) - 8)
+	if to == pos:
+		return
+	var tw := create_tween()
+	tw.tween_method(func(v: Vector2): DisplayServer.window_set_position(Vector2i(v.round())),
+		Vector2(pos), Vector2(to), 0.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	await tw.finished
+
+
+func _update_carry(delta: float) -> void:
+	var mouse := Vector2(DisplayServer.mouse_get_position())
+	var target := mouse - _carry_grab
+	if not _carry_ready:
+		_carry_pos = target   # пока она садится — окно просто за мышью, как раньше
+	else:
+		_carry_pos = _carry_pos.lerp(target, 1.0 - exp(-carry_follow_speed * delta))
+	DisplayServer.window_set_position(Vector2i(_carry_pos.round()))
 
 
 func _on_poke() -> void:
@@ -205,8 +312,6 @@ func _on_poke() -> void:
 		brain.send({"type": "poke"})
 	else:
 		say(POKE_LINES.pick_random(), 2.5)
-	if character.has_animation("wave") and character.current_pose == character.idle_animation:
-		character.play("wave")
 
 
 # ---------- меню ----------
