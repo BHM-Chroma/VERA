@@ -41,6 +41,7 @@ var _carry := false
 var _carry_pos := Vector2.ZERO        # позиция окна (дробная, для плавности)
 var _carry_grab := Vector2.ZERO       # точка в окне, которая должна быть под курсором
 var _carry_ready := false             # плита уже стоит под ней
+var _carry_top := Vector2.ZERO        # верх плиты в окне (пиксели)
 
 enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW }
 
@@ -260,16 +261,25 @@ func _begin_carry() -> void:
 		tw.tween_property(character, "position:y", character.position.y + dy / px_per_unit, 0.2) \
 			.set_trans(Tween.TRANS_SINE)
 		top.y -= dy
+	_carry_top = top
 	_carry_grab = top + Vector2(0.0, -carry_cursor_offset)
 	_carry_ready = true
 
 
 func _end_carry() -> void:
+	var was_ready := _carry_ready
 	_carry = false
 	_carry_ready = false
 	platform.disappear()
-	character.end_drag()
 	wanderer.on_user_moved()
+	# отпустили плиту у верхнего края окна — садится на него
+	if was_ready:
+		var plate := Vector2(DisplayServer.window_get_position()) + _carry_top
+		if await wanderer.drop_on_window(plate):
+			return
+		if _carry:
+			return   # её уже снова схватили
+	character.end_drag()
 	await get_tree().create_timer(0.35).timeout
 	if _carry:
 		return   # её уже снова схватили
@@ -468,6 +478,8 @@ func _on_brain_message(msg: Dictionary) -> void:
 			_sleeping = int(msg.get("index", -1)) == 2
 		"stats":
 			_stats = msg
+		"window_moved":
+			wanderer.on_window_moved(msg)
 		"wander":
 			if msg.has("enabled"):
 				set_wander(bool(msg.enabled))

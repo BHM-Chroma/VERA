@@ -31,13 +31,12 @@ var _timer := 0.0
 var _follow_hwnd := 0
 var _follow_off := Vector2i.ZERO      # смещение нашего окна от угла чужого окна
 var _follow_win := Rect2i()
-var _follow_timer := 0.0
-var _follow_pending := false          # запрос к мозгу уже в пути
 var _follow_pos := Vector2.ZERO       # где сейчас наше окно (дробно, для плавности)
 var _follow_target := Vector2.ZERO    # куда ему надо
-## Как часто спрашивать, где окно (сек), и как быстро догонять его.
-@export var follow_poll := 0.033
-@export var follow_speed := 22.0
+## Как быстро догонять окно (больше — резче, меньше — плавнее, но с отставанием).
+@export var follow_speed := 45.0
+## Если отпустить её так, что плита в стольких пикселях от верхнего края окна, — садится на него.
+@export var drop_tolerance := 45
 var _last_side := 1                   # -1 левый угол, 1 правый
 var _head_offset := 0.0               # где макушка в окне персонажа (пиксели)
 
@@ -63,18 +62,30 @@ func is_following_window() -> bool:
 
 ## Пользователь сам перетащил персонажа — перестаём ездить за окном.
 func on_user_moved() -> void:
-	_follow_hwnd = 0
+	_stop_follow()
 	reset_timer()
+
+
+func _start_follow(hwnd: int, win: Rect2i, pos: Vector2i) -> void:
+	_follow_hwnd = hwnd
+	_follow_win = win
+	_follow_off = pos - win.position
+	_follow_pos = Vector2(pos)
+	_follow_target = _follow_pos
+	# мозг сам будет присылать window_moved, как только окно сдвинется
+	main.brain.send({"type": "follow_window", "hwnd": hwnd})
+
+
+func _stop_follow() -> void:
+	if _follow_hwnd != 0:
+		main.brain.send({"type": "follow_window", "hwnd": 0})
+	_follow_hwnd = 0
 
 
 func _process(delta: float) -> void:
 	if busy:
 		return
 	if _follow_hwnd != 0:
-		_follow_timer -= delta
-		if _follow_timer <= 0.0 and not _follow_pending:
-			_follow_timer = follow_poll
-			_check_follow()
 		_glide(delta)
 	if not enabled or not main.is_idle():
 		return
@@ -89,7 +100,7 @@ func wander(force_corner := false) -> void:
 	if busy:
 		return
 	busy = true
-	_follow_hwnd = 0
+	_stop_follow()
 	await _fade(1.0)
 
 	var placed := false
@@ -153,7 +164,36 @@ func _try_place_on_window() -> bool:
 	var reply = await main.brain.request({"type": "window_query"})
 	if reply == null or not (reply.get("window") is Dictionary):
 		return false
-	var win := _to_godot_rect(reply["window"])
+	return await _place_on_window(reply["window"])
+
+
+## Её отпустили мышкой: если плита у верхнего края окна — садится на этот край.
+## point — где была плита (координаты экрана Godot).
+func drop_on_window(point: Vector2) -> bool:
+	if busy or not main.brain.connected or not character.has_animation(window_pose):
+		return false
+	var origin := DisplayServer.screen_get_position(DisplayServer.get_primary_screen())
+	var reply = await main.brain.request({"type": "window_at", "x": int(point.x) - origin.x,
+		"y": int(point.y) - origin.y, "tol": drop_tolerance}, 0.5)
+	if reply == null or not (reply.get("window") is Dictionary):
+		return false
+	busy = true
+	# короткий пиксельный «глитч» прячет смену позы
+	var tw := create_tween()
+	tw.tween_property(character, "vanish", 0.45, 0.1)
+	await tw.finished
+	var ok := await _place_on_window(reply["window"], int(point.x))
+	tw = create_tween()
+	tw.tween_property(character, "vanish", 0.0, 0.18)
+	await tw.finished
+	busy = false
+	reset_timer()
+	return ok
+
+
+## Сесть на верхний край окна w (словарь от мозга). seat_x — где сесть (экранный x), -1 — случайно.
+func _place_on_window(w: Dictionary, seat_x := -1) -> bool:
+	var win := _to_godot_rect(w)
 	if win.size.x < 300 or _is_own_window(win):
 		return false
 
@@ -171,17 +211,12 @@ func _try_place_on_window() -> bool:
 	var max_x := win.end.x - margin
 	if max_x <= min_x:
 		return false
-	var seat_screen_x := randi_range(min_x, max_x)
+	var seat_screen_x := randi_range(min_x, max_x) if seat_x < 0 else clampi(seat_x, min_x, max_x)
 	var pos := Vector2i(seat_screen_x - int(seat.x), win.position.y - int(seat.y + seat_pad))
 	DisplayServer.window_set_position(pos)
 
 	_head_offset = bbox.position.y
-	_follow_hwnd = int(reply["window"].get("hwnd", 0))
-	_follow_win = win
-	_follow_off = pos - win.position
-	_follow_pos = Vector2(pos)
-	_follow_target = _follow_pos
-	_follow_timer = follow_poll
+	_start_follow(int(w.get("hwnd", 0)), win, pos)
 	return true
 
 
@@ -197,16 +232,11 @@ func _glide(delta: float) -> void:
 	DisplayServer.window_set_position(Vector2i(_follow_pos.round()))
 
 
-func _check_follow() -> void:
-	var hwnd := _follow_hwnd
-	_follow_pending = true
-	var reply = await main.brain.request({"type": "window_query", "hwnd": hwnd}, 1.0)
-	_follow_pending = false
-	if hwnd != _follow_hwnd or busy:
+## Мозг сообщил: окно, на котором она сидит, сдвинулось / изменилось / пропало.
+func on_window_moved(msg: Dictionary) -> void:
+	if int(msg.get("hwnd", 0)) != _follow_hwnd or _follow_hwnd == 0 or busy:
 		return
-	if reply == null:
-		return   # мозг молчит — просто остаёмся на месте
-	var w = reply.get("window")
+	var w = msg.get("window")
 	if not (w is Dictionary):
 		# окно закрыли, свернули или развернули на весь экран — уходим в угол
 		_follow_hwnd = 0
@@ -216,7 +246,7 @@ func _check_follow() -> void:
 	if win == _follow_win:
 		return
 	if _is_own_window(win):
-		_follow_hwnd = 0
+		_stop_follow()
 		wander(true)
 		return
 	# окно сдвинули или изменили размер — едем вместе с ним
@@ -228,7 +258,7 @@ func _check_follow() -> void:
 	# окно уехало так, что ей негде сидеть (голова за краем экрана) — уходим в угол
 	var scr := _screen_for(win)
 	if target.y + int(_head_offset) < scr.position.y or not scr.intersects(Rect2i(target, main.window_size)):
-		_follow_hwnd = 0
+		_stop_follow()
 		wander(true)
 		return
 	_follow_win = win

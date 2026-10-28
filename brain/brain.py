@@ -87,6 +87,8 @@ class Brain:
         self.last_interaction = 0.0
         self.quit_event = asyncio.Event()
         self.aliases = [a.lower() for a in cfg["aliases"]]
+        self.follow_hwnd = 0
+        self._follow_last = None
 
     # ---------- связь с персонажем ----------
 
@@ -133,6 +135,15 @@ class Brain:
         elif kind == "shutdown":
             print("[мозг] персонаж закрыт через меню — завершаюсь")
             self.quit_event.set()
+        elif kind == "follow_window":
+            # персонаж сел на окно — сами сообщаем, когда оно сдвинется
+            self.follow_hwnd = int(msg.get("hwnd") or 0)
+            self._follow_last = "start"
+        elif kind == "window_at":
+            info = windows_info.window_at(int(msg.get("x", 0)), int(msg.get("y", 0)), int(msg.get("tol", 45)))
+            print(f"[окна] отпустили у окна: {info['process']} «{info['title'][:40]}»" if info
+                  else "[окна] отпустили не у края окна")
+            await self.broadcast({"type": "window_info", "reply_to": msg.get("id"), "window": info})
         elif kind == "window_query":
             hwnd = msg.get("hwnd")
             info = windows_info.describe(int(hwnd)) if hwnd else windows_info.pick_window()
@@ -248,6 +259,25 @@ class Brain:
                 pass
             await asyncio.sleep(0.5)
 
+    async def follow_loop(self):
+        """Окно, на котором она сидит: ~100 раз в секунду проверяем, не сдвинулось ли,
+        и сразу сообщаем персонажу (без запросов с его стороны — так нет задержки)."""
+        while True:
+            hwnd = self.follow_hwnd
+            if not hwnd:
+                await asyncio.sleep(0.05)
+                continue
+            try:
+                info = windows_info.quick_rect(hwnd)
+            except OSError:
+                info = None
+            if info != self._follow_last and hwnd == self.follow_hwnd:
+                self._follow_last = info
+                await self.broadcast({"type": "window_moved", "hwnd": hwnd, "window": info})
+                if info is None:
+                    self.follow_hwnd = 0
+            await asyncio.sleep(0.01)
+
     async def monitor_loop(self):
         while True:
             stats = await asyncio.to_thread(self.monitor.sample)
@@ -276,12 +306,14 @@ class Brain:
             print(f"[мозг] жду персонажа на ws://{host}:{port}")
             mon = asyncio.create_task(self.monitor_loop())
             win_task = asyncio.create_task(self.active_window_loop())
+            follow_task = asyncio.create_task(self.follow_loop())
             listener = await asyncio.to_thread(self.start_voice)
             await self.quit_event.wait()
             await self.broadcast({"type": "quit"})
             await asyncio.sleep(0.5)   # дать персонажу получить сообщение до закрытия
             mon.cancel()
             win_task.cancel()
+            follow_task.cancel()
             if listener:
                 listener.stop()
 

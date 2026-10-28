@@ -140,6 +140,64 @@ def describe(hwnd):
             "title": title.value, "process": proc}
 
 
+def quick_rect(hwnd):
+    """Быстрая проверка окна, на котором она уже сидит (вызывается ~100 раз в секунду):
+    без имени процесса и заголовка. None — окно закрыли, свернули, развернули."""
+    if not IS_WINDOWS or not hwnd or not user32.IsWindow(hwnd):
+        return None
+    if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
+        return None
+    if _cloaked(hwnd):
+        return None
+    r = _rect(hwnd)
+    w, h = r.right - r.left, r.bottom - r.top
+    if w < MIN_W or h < MIN_H:
+        return None
+    mon = user32.MonitorFromWindow(hwnd, 2)
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    user32.GetMonitorInfoW(mon, ctypes.byref(mi))
+    m = mi.rcMonitor
+    if r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom:
+        return None
+    return {"hwnd": int(hwnd), "x": r.left, "y": r.top, "w": w, "h": h}
+
+
+def _top_level_windows():
+    """Все окна верхнего уровня сверху вниз (как они лежат на экране)."""
+    result = []
+    if not IS_WINDOWS:
+        return result
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hwnd, _):
+        result.append(hwnd)
+        return True
+
+    user32.EnumWindows(proc(cb), 0)
+    return result
+
+
+def window_at(x, y, tol=45):
+    """Окно, верхний край которого рядом с точкой (x, y): |y - верх| <= tol и x над окном.
+    Если точку закрывает другое окно, лежащее выше, — None (его край не виден)."""
+    if not IS_WINDOWS:
+        return None
+    for hwnd in _top_level_windows():
+        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd) or _pid(hwnd) in OWN_PIDS:
+            continue
+        r = _rect(hwnd)
+        if not (r.left <= x <= r.right and r.top - tol <= y <= r.bottom):
+            continue
+        info = describe(hwnd)
+        if info and abs(y - info["y"]) <= tol:
+            return info
+        # точка внутри другого настоящего окна (обычного или развёрнутого) — дальше не смотрим
+        if y >= r.top and (info or (user32.IsZoomed(hwnd) and not _cloaked(hwnd))):
+            return None
+    return None
+
+
 _last_active = 0
 
 
