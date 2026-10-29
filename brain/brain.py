@@ -75,6 +75,8 @@ POKE_LINES = [
 ]
 LAUNCH_WORDS = ("запусти", "открой", "включи")
 LAUNCH_STEMS = ("запус", "откр", "включ")      # запусти/запустить/открой/открыть/включи/включить
+CLOSE_STEMS = ("закр", "выключ", "выруб", "заверш")   # закрой/выключи/выруби/заверши
+DANGER_THRESHOLD = 92      # опасные команды (выключение ПК) — только при почти точном совпадении
 ORDINALS = {"перв": 0, "один": 0, "1": 0, "втор": 1, "два": 1, "2": 1, "трет": 2, "три": 2, "3": 2}
 CANCEL_WORDS = ("никак", "отмена", "не надо", "ничего", "забей")
 COMMAND_THRESHOLD = 70
@@ -90,7 +92,8 @@ class Brain:
         self.loop = None
         self.sleep_mode = False
         self.pending = None            # (ключ команды, текст, срок подтверждения)
-        self.pending_choice = None     # (варианты программ, запрос, срок) — когда переспросила
+        self.pending_choice = None     # (варианты, запрос, срок, "open"/"close") — когда переспросила
+        self.shutdown_until = 0.0      # идёт отсчёт выключения ПК (до этого времени можно отменить)
         self.apps = apps.AppIndex()
         self.last_interaction = 0.0
         self.quit_event = asyncio.Event()
@@ -242,6 +245,12 @@ class Brain:
         self.last_interaction = now
         await self.broadcast({"type": "attention"})   # с ней общаются — ей не скучно
 
+        # идёт отсчёт выключения ПК — «стоп», «нет», «отмена» его отменяют
+        if now < self.shutdown_until and (any(w.startswith(("стоп", "стой", "нет", "отмен")) for w in cmd.split())
+                                          or "не выключ" in cmd or "не надо" in cmd):
+            await self.say(await asyncio.to_thread(self.commands.execute, "cancel_shutdown", cmd))
+            return
+
         # подтверждение опасной команды
         if self.pending:
             key, ptext, deadline = self.pending
@@ -255,16 +264,19 @@ class Brain:
 
         # ответ на «нашла несколько — какую открыть?»
         if self.pending_choice:
-            options, query, deadline = self.pending_choice
+            options, query, deadline, action = self.pending_choice
             self.pending_choice = None
             if now < deadline:
                 picked = self._pick_option(cmd, options)
                 if picked:
-                    self.apps.remember_choice(query, picked)
-                    await self._launch_app(picked)
+                    if action == "close":
+                        await self._close_app(picked)
+                    else:
+                        self.apps.remember_choice(query, picked)
+                        await self._launch_app(picked)
                     return
                 if any(w in cmd for w in CANCEL_WORDS):
-                    await self.say("Хорошо, не открываю.")
+                    await self.say("Хорошо, ничего не делаю.")
                     return
 
         if not cmd:
@@ -273,19 +285,26 @@ class Brain:
 
         key, score = self.commands.recognize(cmd)
 
-        # «запусти X» / «открой X» (слово может стоять и не первым: «а запусти-ка X»)
-        # — сначала точные команды, потом поиск программы
-        if score < 85:
+        danger = bool(key) and self.commands.is_danger(key)
+        exact = score >= (DANGER_THRESHOLD if danger else 85)
+
+        # «закрой X» / «выключи X» — закрыть открытую программу
+        # «запусти X» / «открой X» — запустить (слово может стоять и не первым: «а запусти-ка X»)
+        # Сначала точные команды («выключи музыку», «выключи компьютер»), потом программы.
+        if not exact:
             words = cmd.split()
             for i, w in enumerate(words):
-                if w.startswith(LAUNCH_STEMS) and i + 1 < len(words):
+                if i + 1 < len(words) and w.startswith(CLOSE_STEMS):
+                    await self.close_app(" ".join(words[i + 1:]))
+                    return
+                if i + 1 < len(words) and w.startswith(LAUNCH_STEMS):
                     await self.open_app(" ".join(words[i + 1:]))
                     return
 
-        if key and score >= COMMAND_THRESHOLD:
-            if self.commands.is_danger(key):
+        if key and score >= COMMAND_THRESHOLD and (exact or not danger):
+            if danger:
                 self.pending = (key, cmd, now + 15)
-                await self.say(f"Точно выполнить «{cmd}»? Скажи «да».")
+                await self.say(f"{self.commands.title(key)}? Скажи «да», чтобы подтвердить.")
                 return
             await self.say(await asyncio.to_thread(self.commands.execute, key, cmd))
             return
@@ -311,8 +330,29 @@ class Brain:
             return
         options = [best] + rivals
         listing = ", ".join(f"{i + 1}) {e['name']}" for i, e in enumerate(options))
-        self.pending_choice = (options, name, time.time() + 20)
+        self.pending_choice = (options, name, time.time() + 20, "open")
         await self.say(f"Нашла несколько: {listing}. Какую открыть?")
+
+    async def close_app(self, name):
+        found = await asyncio.to_thread(apps.find_running, name)
+        if not found:
+            await self.say(f"Не вижу открытой программы «{name}».")
+            return
+        best, best_score = found[0]
+        rivals = [w for w, sc in found[1:] if best_score - sc < 6]
+        if not rivals:
+            await self._close_app(best)
+            return
+        options = [best] + rivals
+        for o in options:
+            o["name"] = f"{apps.display_name(o)} («{o['title'][:30]}»)"
+        listing = ", ".join(f"{i + 1}) {o['name']}" for i, o in enumerate(options))
+        self.pending_choice = (options, name, time.time() + 20, "close")
+        await self.say(f"Открыто несколько: {listing}. Какую закрыть?")
+
+    async def _close_app(self, window):
+        await asyncio.to_thread(apps.close, window)
+        await self.say(f"Закрываю {apps.display_name(window)}.")
 
     async def _launch_app(self, entry):
         try:

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import webbrowser
 
 from rapidfuzz import fuzz
@@ -128,8 +129,12 @@ class Commands:
         for key, link in cfg.get("links", {}).items():
             self.add(key, link["phrases"], self._link_action(link["url"], link.get("reply", "Открываю")))
 
-    def add(self, key, phrases, func, danger=False):
-        self.table[key] = {"phrases": tuple(phrases), "func": func, "danger": danger}
+    def add(self, key, phrases, func, danger=False, title=None):
+        """danger=True — перед выполнением спросить «да», title — что именно будет сделано."""
+        self.table[key] = {"phrases": tuple(phrases), "func": func, "danger": danger, "title": title}
+
+    def title(self, key):
+        return self.table[key].get("title") or key
 
     @staticmethod
     def _link_action(url, reply):
@@ -175,11 +180,13 @@ class Commands:
                 webbrowser.open("about:blank")
             return "Открываю Chrome."
 
-        def vol_up(_):
-            return f"Громкость {set_volume(get_volume() + 10)}%."
+        def vol_up(text):
+            n = numbers(text)     # «громче на 30» — на 30, просто «громче» — на 10
+            return f"Громкость {set_volume(get_volume() + (n[0] if n else 10))}%."
 
-        def vol_down(_):
-            return f"Громкость {set_volume(get_volume() - 10)}%."
+        def vol_down(text):
+            n = numbers(text)
+            return f"Громкость {set_volume(get_volume() - (n[0] if n else 10))}%."
 
         def vol_set(text):
             n = numbers(text)
@@ -205,11 +212,13 @@ class Commands:
             return "Язык переключен."
 
         def shutdown_pc(_):
-            subprocess.run(["shutdown", "/s", "/t", "30"], check=False)
-            return "Выключаю компьютер через 30 секунд. Скажи «отмена выключения», если передумал."
+            subprocess.run(["shutdown", "/s", "/t", "60"], check=False)
+            self.brain.shutdown_until = time.time() + 60
+            return "Выключаю компьютер через минуту. Скажи «стоп» или «отмена», если передумал."
 
         def cancel_shutdown(_):
             subprocess.run(["shutdown", "/a"], check=False)
+            self.brain.shutdown_until = 0
             return "Выключение отменено."
 
         def sleep(_):
@@ -231,10 +240,19 @@ class Commands:
             self.brain.send_threadsafe({"type": "wander", "enabled": False})
             return "Хорошо, стою на месте."
 
-        def music_toggle(_):
+        def music_pause(_):
             import music
+            if not self.brain.music_state.get("playing"):
+                return "Музыка и так не играет."
             music.press("play_pause")
-            return "Пауза." if self.brain.music_state.get("playing") else "Включаю музыку."
+            return "Пауза."
+
+        def music_play(_):
+            import music
+            if self.brain.music_state.get("playing"):
+                return "Музыка уже играет."
+            music.press("play_pause")
+            return "Включаю музыку."
 
         def music_next(_):
             import music
@@ -279,8 +297,10 @@ class Commands:
 
         self.add("ctime", ("текущее время", "сейчас времени", "который час", "сколько времени"), ctime)
         self.add("open_chrome", ("открой хром", "хром", "открой браузер", "включи chrome"), chrome)
-        self.add("volume_up", ("сделай громче", "увеличь громкость", "громче"), vol_up)
-        self.add("volume_down", ("сделай тише", "уменьши громкость", "тише"), vol_down)
+        self.add("volume_up", ("сделай громче", "увеличь громкость", "громче", "громче на", "сделай громче на",
+                               "прибавь громкость", "прибавь звук"), vol_up)
+        self.add("volume_down", ("сделай тише", "уменьши громкость", "тише", "тише на", "сделай тише на",
+                                 "убавь громкость", "убавь звук"), vol_down)
         self.add("volume_set", ("поставь громкость", "громкость на"), vol_set)
         self.add("brightness_up", ("ярче", "увеличь яркость"), br_up)
         self.add("brightness_down", ("темнее", "уменьши яркость"), br_down)
@@ -288,15 +308,17 @@ class Commands:
         self.add("lock", ("заблокируй экран", "заблокируй компьютер", "заблокируй", "блокировка"), lock)
         self.add("langswitch", ("поменяй язык", "смени язык", "смена языка"), lang)
         self.add("shutdown_pc", ("выключи компьютер", "выключи пк", "отключи компьютер", "отключи пк"),
-                 shutdown_pc, danger=True)
+                 shutdown_pc, danger=True, title="Выключить компьютер")
         self.add("cancel_shutdown", ("отмена выключения", "отмени выключение", "не выключай"), cancel_shutdown)
         self.add("sleep", ("спи", "режим сна", "усни"), sleep)
         self.add("wake", ("проснись", "включись"), wake)
         self.add("stats", ("как дела у компьютера", "состояние пк", "нагрузка", "как компьютер"), stats)
         self.add("wander_on", ("погуляй", "гуляй по экрану", "можешь гулять", "перейди в другое место"), wander_on)
         self.add("wander_off", ("стой на месте", "не гуляй", "хватит гулять", "не уходи"), wander_off)
-        self.add("music_toggle", ("пауза", "поставь на паузу", "останови музыку", "выключи музыку",
-                                  "продолжи музыку", "включи музыку", "сними с паузы"), music_toggle)
+        self.add("music_pause", ("пауза", "поставь на паузу", "останови музыку", "выключи музыку",
+                                 "выключи песню", "стоп музыка"), music_pause)
+        self.add("music_play", ("продолжи музыку", "включи музыку", "сними с паузы", "включи песню",
+                                "продолжи"), music_play)
         self.add("music_next", ("следующий трек", "следующая песня", "переключи трек", "переключи песню",
                                 "другую песню", "следующую"), music_next)
         self.add("music_prev", ("предыдущий трек", "предыдущая песня", "верни песню", "прошлый трек"), music_prev)
@@ -309,7 +331,8 @@ class Commands:
         self.add("apps_refresh", ("обнови список программ", "обнови программы", "найди новые программы",
                                   "пересканируй программы"), apps_refresh)
         self.add("apps_count", ("сколько программ ты знаешь", "сколько у меня программ"), apps_count)
-        self.add("shutdown", ("отбой", "выключись", "завершай работу"), quit_brain, danger=True)
+        self.add("shutdown", ("отбой", "выключись", "завершай работу"), quit_brain, danger=True,
+                 title="Закрыть меня (VERONIKA)")
 
 
 def startfile_supported():

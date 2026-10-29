@@ -365,3 +365,78 @@ def launch(entry):
         subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{target}"], creationflags=NO_WINDOW)
     else:
         os.startfile(target)  # ярлык, exe или steam://, com.epicgames.launcher://
+
+
+# ---------- закрытие открытых программ ----------
+
+def running_windows():
+    """Открытые окна программ: [{"pid", "proc", "title", "hwnds"}], по одной записи на процесс."""
+    if not IS_WINDOWS:
+        return []
+    import ctypes
+    import windows_info as wi
+    user32 = ctypes.windll.user32
+    by_pid = {}
+    for hwnd in wi._top_level_windows():
+        if not user32.IsWindowVisible(hwnd) or wi._cloaked(hwnd):
+            continue
+        n = user32.GetWindowTextLengthW(hwnd)
+        if n == 0:
+            continue
+        pid = wi._pid(hwnd)
+        if pid in wi.OWN_PIDS:
+            continue
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cls, 256)
+        if cls.value in wi.SKIP_CLASSES - {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"}:
+            continue
+        proc = wi._process_name(hwnd)
+        if not proc or proc.startswith(("shellexperiencehost", "searchhost", "startmenuexperiencehost",
+                                        "textinputhost", "lockapp", "applicationframehost")):
+            continue
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        rec = by_pid.setdefault(pid, {"pid": pid, "proc": proc, "title": buf.value, "hwnds": []})
+        rec["hwnds"].append(int(hwnd))
+    return list(by_pid.values())
+
+
+def find_running(query, windows=None):
+    """Какую открытую программу имеют в виду: [(запись, очки), …], лучшие первыми."""
+    q = normalize(query)
+    if not q:
+        return []
+    variants = {q, translit(q)}
+    for word in q.split():
+        for syn_key, syn in SYNONYMS.items():
+            if fuzz.ratio(word, syn_key) >= 80:
+                variants.add(normalize(syn))
+    scored = []
+    for w in (windows if windows is not None else running_windows()):
+        proc = normalize(w["proc"].rsplit(".", 1)[0])
+        title = normalize(w["title"])
+        best = 0.0
+        for v in variants:
+            if v == proc:
+                s = 110.0
+            elif len(v) <= 3:
+                s = 100.0 if v in proc.split() or v in title.split() else 0.0
+            else:
+                s = max(fuzz.WRatio(v, proc), fuzz.token_set_ratio(v, title) - 5,
+                        fuzz.partial_ratio(v, title) - 8 if len(v) >= 5 else 0)
+            best = max(best, s)
+        if best >= 80:
+            scored.append((w, best))
+    scored.sort(key=lambda x: -x[1])
+    return scored
+
+
+def close(window):
+    """Закрыть программу «по-хорошему» — как крестиком (WM_CLOSE): она успеет спросить про сохранение."""
+    import ctypes
+    for hwnd in window["hwnds"]:
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+
+
+def display_name(window):
+    return window["proc"].rsplit(".", 1)[0].capitalize()
