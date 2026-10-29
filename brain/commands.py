@@ -249,6 +249,22 @@ class Commands:
         def music_what(_):
             return self.brain.music_info()
 
+        def hide(_):
+            self.brain.send_threadsafe({"type": "visibility", "visible": False})
+            return "Прячусь. Я рядом — позови по имени или кликни значок у часов."
+
+        def show(_):
+            self.brain.send_threadsafe({"type": "visibility", "visible": True})
+            return "Я тут!"
+
+        def apps_refresh(_):
+            self.brain.apps.refresh(force=True)
+            return "Обновляю список программ, это займёт несколько секунд."
+
+        def apps_count(_):
+            n = len(self.brain.apps.entries)
+            return f"Я знаю {n} программ и игр." if n else "Список программ ещё собирается."
+
         def quit_brain(_):
             self.brain.request_quit()
             return "Хорошо, завершаю работу. До следующего запуска!"
@@ -278,6 +294,11 @@ class Commands:
         self.add("music_prev", ("предыдущий трек", "предыдущая песня", "верни песню", "прошлый трек"), music_prev)
         self.add("music_what", ("что играет", "что за песня", "какая песня", "что за трек", "что сейчас играет"),
                  music_what)
+        self.add("hide", ("спрячься", "скройся", "исчезни", "уйди в фон", "не мешай"), hide)
+        self.add("show", ("покажись", "появись", "вернись", "выйди"), show)
+        self.add("apps_refresh", ("обнови список программ", "обнови программы", "найди новые программы",
+                                  "пересканируй программы"), apps_refresh)
+        self.add("apps_count", ("сколько программ ты знаешь", "сколько у меня программ"), apps_count)
         self.add("shutdown", ("отбой", "выключись", "завершай работу"), quit_brain, danger=True)
 
 

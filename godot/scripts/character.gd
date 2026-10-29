@@ -39,6 +39,14 @@ var all_materials: Array[ShaderMaterial] = []
 var current_pose := "idle"
 ## Сейчас играет музыка (позы берутся из вариантов «…_music»).
 var music := false
+## С какой стороны экрана она сейчас (-1 слева, 1 справа). Некоторые позы зеркалятся,
+## чтобы ноги смотрели к середине экрана, а не в край.
+var screen_side := 1:
+	set(v):
+		screen_side = v
+		_update_mirror()
+## Позы, в которых ноги в Blender направлены влево: слева экрана их отражаем.
+const MIRROR_ON_LEFT := ["idle_sit"]
 ## 0 — виден, 1 — рассыпался (эффект перемещения).
 var vanish := 0.0:
 	set(v):
@@ -234,7 +242,13 @@ func set_pose(pose: String, blend := 0.25) -> bool:
 	if found == "":
 		return false
 	current_pose = found
+	_update_mirror()
 	return play(_pose_variant(found), blend)
+
+
+func _update_mirror() -> void:
+	var mirrored: bool = screen_side < 0 and current_pose.to_lower() in MIRROR_ON_LEFT
+	scale.x = -1.0 if mirrored else 1.0
 
 
 ## Играет музыка: вместо позы — её вариант «…_music», если он есть в модели.

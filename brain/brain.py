@@ -14,8 +14,10 @@ import sys
 import time
 
 import websockets
+from rapidfuzz import fuzz
 
 from commands import Commands, run_program
+import apps
 from llm import LLM
 from monitor import Monitor
 from voice import VoiceListener
@@ -71,7 +73,9 @@ POKE_LINES = [
     "Что-то нужно? Просто позови меня по имени.",
     "Нажми правой кнопкой, если хочешь написать мне.",
 ]
-LAUNCH_WORDS = ("запусти", "открой")
+LAUNCH_WORDS = ("запусти", "открой", "включи")
+ORDINALS = {"перв": 0, "один": 0, "1": 0, "втор": 1, "два": 1, "2": 1, "трет": 2, "три": 2, "3": 2}
+CANCEL_WORDS = ("никак", "отмена", "не надо", "ничего", "забей")
 COMMAND_THRESHOLD = 70
 
 
@@ -85,6 +89,8 @@ class Brain:
         self.loop = None
         self.sleep_mode = False
         self.pending = None            # (ключ команды, текст, срок подтверждения)
+        self.pending_choice = None     # (варианты программ, запрос, срок) — когда переспросила
+        self.apps = apps.AppIndex()
         self.last_interaction = 0.0
         self.quit_event = asyncio.Event()
         self.aliases = [a.lower() for a in cfg["aliases"]]
@@ -239,6 +245,20 @@ class Brain:
                 await self.say("Хорошо, не буду.")
                 return
 
+        # ответ на «нашла несколько — какую открыть?»
+        if self.pending_choice:
+            options, query, deadline = self.pending_choice
+            self.pending_choice = None
+            if now < deadline:
+                picked = self._pick_option(cmd, options)
+                if picked:
+                    self.apps.remember_choice(query, picked)
+                    await self._launch_app(picked)
+                    return
+                if any(w in cmd for w in CANCEL_WORDS):
+                    await self.say("Хорошо, не открываю.")
+                    return
+
         if not cmd:
             await self.say("Да? Я слушаю.")
             return
@@ -249,8 +269,7 @@ class Brain:
         if cmd.startswith(LAUNCH_WORDS) and score < 85:
             name = cmd.split(maxsplit=1)[1] if " " in cmd else ""
             if name:
-                await self.say(f"Ищу {name}…")
-                await self.say(await asyncio.to_thread(run_program, name))
+                await self.open_app(name)
                 return
 
         if key and score >= COMMAND_THRESHOLD:
@@ -266,15 +285,61 @@ class Brain:
         await self.say(answer)
         self.last_interaction = time.time()
 
+    # ---------- программы ----------
+
+    async def open_app(self, name):
+        found = self.apps.find(name)
+        if not found:
+            if not self.apps.entries:
+                await self.say(f"Ищу {name}…")   # список ещё строится — по-старому, поиском по диску
+            await self.say(await asyncio.to_thread(run_program, name))
+            return
+        best, best_score = found[0]
+        rivals = [e for e, sc in found[1:] if sc >= 80 and best_score - sc < 6]
+        if not rivals:
+            await self._launch_app(best)
+            return
+        options = [best] + rivals
+        listing = ", ".join(f"{i + 1}) {e['name']}" for i, e in enumerate(options))
+        self.pending_choice = (options, name, time.time() + 20)
+        await self.say(f"Нашла несколько: {listing}. Какую открыть?")
+
+    async def _launch_app(self, entry):
+        try:
+            await asyncio.to_thread(apps.launch, entry)
+            await self.say(f"Запускаю {entry['name']}.")
+        except OSError as e:
+            await self.say(f"Не получилось запустить {entry['name']}: {e}")
+
+    @staticmethod
+    def _pick_option(answer, options):
+        for word, idx in ORDINALS.items():
+            if any(w.startswith(word) for w in answer.split()) and idx < len(options):
+                return options[idx]
+        best, best_s = None, 0
+        for e in options:
+            s = max(fuzz.partial_ratio(answer, e["name"].lower()),
+                    fuzz.partial_ratio(apps.translit(answer), e["name"].lower()))
+            if s > best_s:
+                best, best_s = e, s
+        return best if best_s >= 75 else None
+
     # ---------- фоновые задачи ----------
 
     async def active_window_loop(self):
-        """Следим, в каком окне работает человек (для сидения на окне)."""
+        """Следим, в каком окне работает человек (для сидения на окне),
+        и не открыто ли что-то во весь экран (тогда она прячется)."""
+        fullscreen = False
         while True:
             try:
                 windows_info.remember_active()
+                fs = windows_info.foreground_fullscreen()
             except OSError:
-                pass
+                fs = fullscreen
+            if fs != fullscreen:
+                fullscreen = fs
+                print("[окна] полноэкранное окно — прячусь" if fs else "[окна] полноэкранное закрыто — появляюсь")
+                await self.broadcast({"type": "fullscreen", "active": fs})
             await asyncio.sleep(0.5)
 
     async def follow_loop(self):
@@ -295,6 +360,12 @@ class Brain:
                 if info is None:
                     self.follow_hwnd = 0
             await asyncio.sleep(0.01)
+
+    async def apps_loop(self):
+        """Раз в час проверяем, не пора ли обновить список программ (раз в сутки)."""
+        while True:
+            await asyncio.sleep(3600)
+            self.apps.refresh()
 
     async def music_loop(self):
         """Раз в секунду смотрим, что играет. Сообщаем персонажу (анимации, ноты)
@@ -376,6 +447,8 @@ class Brain:
             win_task = asyncio.create_task(self.active_window_loop())
             follow_task = asyncio.create_task(self.follow_loop())
             music_task = asyncio.create_task(self.music_loop())
+            self.apps.refresh()   # список программ — в фоне (если старше суток)
+            apps_task = asyncio.create_task(self.apps_loop())
             listener = await asyncio.to_thread(self.start_voice)
             await self.quit_event.wait()
             await self.broadcast({"type": "quit"})
@@ -384,6 +457,7 @@ class Brain:
             win_task.cancel()
             follow_task.cancel()
             music_task.cancel()
+            apps_task.cancel()
             if listener:
                 listener.stop()
 

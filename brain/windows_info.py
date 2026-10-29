@@ -198,6 +198,30 @@ def window_at(x, y, tol=45):
     return None
 
 
+FULLSCREEN_SKIP_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+
+
+def foreground_fullscreen():
+    """Активное окно развёрнуто на весь экран поверх панели задач (игра, видео во весь экран)."""
+    if not IS_WINDOWS:
+        return False
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd or _pid(hwnd) in OWN_PIDS or not user32.IsWindowVisible(hwnd):
+        return False
+    cls = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, cls, 256)
+    if cls.value in FULLSCREEN_SKIP_CLASSES:
+        return False
+    r = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    mon = user32.MonitorFromWindow(hwnd, 2)
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    user32.GetMonitorInfoW(mon, ctypes.byref(mi))
+    m = mi.rcMonitor
+    return r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom
+
+
 _last_active = 0
 
 

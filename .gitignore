@@ -19,3 +19,5 @@ __pycache__/
 # Сборки
 dist/
 *.zip
+brain/apps_index.json
+brain/apps_choices.json

@@ -54,7 +54,17 @@ var _carry_grab := Vector2.ZERO       # точка в окне, которая �
 var _carry_ready := false             # плита уже стоит под ней
 var _carry_top := Vector2.ZERO        # верх плиты в окне (пиксели)
 
-enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW }
+enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART }
+
+const TRAY_ICON := preload("res://assets/fx/tray.png")
+const RUN_KEY := "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+## Работа в фоне: спрятана по просьбе (значок у часов) / сама спряталась (полноэкранная игра, видео).
+var _user_hidden := false
+var _auto_hidden := false
+var _peeking := false
+var _shown := true
+var _tray: StatusIndicator
 
 const POKE_LINES := [
 	"Эй, щекотно!",
@@ -84,6 +94,7 @@ func _ready() -> void:
 	brain.message_received.connect(_on_brain_message)
 	brain.connection_changed.connect(_on_brain_connection)
 	_start_brain_if_bundled()
+	_build_tray()
 	say("Привет! Я на месте.", 3.0)
 	_wave_hello()
 
@@ -146,7 +157,7 @@ func _is_on_screen(pos: Vector2i) -> bool:
 
 ## Можно ли сейчас переместиться: никто с ней не взаимодействует.
 func is_idle() -> bool:
-	return not _dragging and not bubble.visible and not _chat_window.visible \
+	return _shown and not _dragging and not bubble.visible and not _chat_window.visible \
 		and not _menu.visible and not character.talking and not _sleeping
 
 
@@ -169,7 +180,7 @@ func _process(delta: float) -> void:
 	if character.vanish > 0.01 and notes.get_child_count() > 0:
 		notes.clear()   # рассыпается — ноты пропадают сразу (иначе дотают сами)
 	_pt_timer -= delta
-	if _pt_timer <= 0.0 and not _dragging:
+	if _pt_timer <= 0.0 and not _dragging and _shown:
 		_pt_timer = passthrough_interval
 		_update_passthrough()
 
@@ -218,6 +229,8 @@ func _update_passthrough() -> void:
 # ---------- мышь ----------
 
 func _input(event: InputEvent) -> void:
+	if not _shown:
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
@@ -242,10 +255,7 @@ func _input(event: InputEvent) -> void:
 					_on_poke()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
 			attention()
-			_menu.set_item_checked(_menu.get_item_index(MenuId.ON_TOP), get_window().always_on_top)
-			_menu.set_item_checked(_menu.get_item_index(MenuId.WANDER), wanderer.enabled)
-			_menu.position = DisplayServer.mouse_get_position()
-			_menu.popup()
+			_open_menu(DisplayServer.mouse_get_position())
 	elif event is InputEventMouseMotion and _dragging:
 		var m := DisplayServer.mouse_get_position()
 		if not _moved and (m - _press_pos).length() > 4:
@@ -352,7 +362,7 @@ func attention() -> void:
 
 
 func _update_boredom(delta: float) -> void:
-	if _sleeping or _sleep_requested:
+	if _sleeping or _sleep_requested or not _shown:
 		return
 	if _dragging or _carry or _menu.visible or _chat_window.visible:
 		_idle_time = 0.0
@@ -368,7 +378,15 @@ func _update_boredom(delta: float) -> void:
 	# заскучала — садится прямо там, где стоит
 	if _idle_time >= bored_sit_after and character.current_pose == character.idle_animation \
 			and String(character.anim.current_animation) in [character.idle_animation, character.idle_animation + "_music"]:
+		character.screen_side = _screen_side()
 		character.set_pose("idle_sit", 0.8)
+
+
+## С какой стороны экрана она сейчас: -1 — левая половина, 1 — правая.
+func _screen_side() -> int:
+	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	var cx := DisplayServer.window_get_position().x + window_size.x / 2
+	return -1 if cx < scr.get_center().x else 1
 
 
 func _fall_asleep() -> void:
@@ -412,6 +430,9 @@ func _build_menu() -> void:
 	_menu.add_item("Переместиться сейчас", MenuId.WANDER_NOW)
 	_menu.add_item("Вернуть в угол экрана", MenuId.RESET_POS)
 	_menu.add_separator()
+	_menu.add_item("Спрятаться (значок у часов)", MenuId.HIDE)
+	_menu.add_check_item("Запускать вместе с Windows", MenuId.AUTOSTART)
+	_menu.add_separator()
 	_menu.add_item("Выход", MenuId.QUIT)
 	_menu.id_pressed.connect(_on_menu)
 	add_child(_menu)
@@ -434,6 +455,10 @@ func _on_menu(id: int) -> void:
 			if _settings.has_section_key("window", "position"):
 				_settings.erase_section_key("window", "position")
 				_settings.save(SETTINGS_PATH)
+		MenuId.HIDE:
+			set_user_hidden(true)
+		MenuId.AUTOSTART:
+			_set_autostart(not _autostart_enabled())
 		MenuId.QUIT:
 			_quit()
 
@@ -517,11 +542,140 @@ func _show_stats() -> void:
 	say("\n".join(lines), 5.0)
 
 
+# ---------- работа в фоне ----------
+
+func _open_menu(at: Vector2i) -> void:
+	_menu.set_item_checked(_menu.get_item_index(MenuId.ON_TOP), get_window().always_on_top)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.WANDER), wanderer.enabled)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOSTART), _autostart_enabled())
+	_menu.position = at
+	_menu.popup()
+
+
+## Значок у часов: левый клик — спрятать/показать, правый — меню.
+func _build_tray() -> void:
+	if not ClassDB.class_exists("StatusIndicator"):
+		return
+	_tray = StatusIndicator.new()
+	_tray.icon = TRAY_ICON
+	_tray.tooltip = "VERONIKA — левый клик: спрятать/показать, правый: меню"
+	_tray.pressed.connect(_on_tray_pressed)
+	add_child(_tray)
+
+
+func _on_tray_pressed(button: int, pos: Vector2i) -> void:
+	attention()
+	if button == MOUSE_BUTTON_LEFT:
+		set_user_hidden(not _user_hidden)
+	elif button == MOUSE_BUTTON_RIGHT:
+		if _user_hidden:
+			set_user_hidden(false)   # меню — часть окна персонажа, поэтому сначала показываемся
+		_open_menu(pos - Vector2i(0, 260))
+
+
+func set_user_hidden(value: bool) -> void:
+	if value == _user_hidden:
+		return
+	_user_hidden = value
+	if value:
+		_peeking = false
+		# сначала договорит («Прячусь…»), потом рассыпается
+		await get_tree().create_timer(0.15).timeout
+		while bubble.visible or character.talking:
+			await get_tree().create_timer(0.2).timeout
+		if not _user_hidden:
+			return
+		await _vanish_out()
+	_apply_visibility()
+	if not value and not _auto_hidden:
+		await _vanish_in()
+
+
+## Спрятать/показать. Главное окно Godot скрыть нельзя, поэтому «спрятана» — это:
+## персонаж и облачко невидимы, окно пропускает все клики насквозь, кадров почти нет.
+func _apply_visibility() -> void:
+	var hide_now := (_user_hidden and not _peeking) or _auto_hidden
+	if hide_now == (not _shown):
+		return
+	_shown = not hide_now
+	character.visible = _shown
+	if hide_now:
+		notes.clear()
+		bubble.hide()
+		# крошечная область в углу — всё остальное окно прозрачно для мыши
+		DisplayServer.window_set_mouse_passthrough(PackedVector2Array([Vector2.ZERO, Vector2(1, 0), Vector2(0, 1)]))
+	else:
+		_pt_timer = 0.0
+	# спрятана — почти не тратим видеокарту
+	Engine.max_fps = 5 if hide_now else 60
+	OS.low_processor_usage_mode = hide_now
+
+
+## Спрятана, но надо что-то сказать: появляется на время облачка.
+func _peek(duration: float) -> void:
+	if _peeking:
+		return
+	_peeking = true
+	_apply_visibility()
+	await _vanish_in()
+	await get_tree().create_timer(duration + 0.6).timeout
+	while bubble.visible or character.talking:
+		await get_tree().create_timer(0.3).timeout
+	if _peeking and _user_hidden:
+		await _vanish_out()
+	_peeking = false
+	_apply_visibility()
+
+
+func _vanish_out() -> void:
+	if not _shown:
+		return
+	var tw := create_tween()
+	tw.tween_property(character, "vanish", 1.0, 0.4)
+	await tw.finished
+
+
+func _vanish_in() -> void:
+	character.vanish = 1.0
+	var tw := create_tween()
+	tw.tween_property(character, "vanish", 0.0, 0.4)
+	await tw.finished
+
+
+## Автозапуск — запись в реестре HKCU ... Run (без прав администратора).
+func _autostart_enabled() -> bool:
+	if OS.get_name() != "Windows":
+		return false
+	return OS.execute("reg", ["query", RUN_KEY, "/v", "VERONIKA"], [], false, false) == 0
+
+
+func _set_autostart(enable: bool) -> void:
+	if OS.get_name() != "Windows" or OS.has_feature("editor"):
+		say("Автозапуск работает только в собранной программе.", 3.0)
+		return
+	var code: int
+	if enable:
+		var exe := OS.get_executable_path().replace("/", "\\")
+		code = OS.execute("reg", ["add", RUN_KEY, "/v", "VERONIKA", "/t", "REG_SZ",
+			"/d", "\"%s\"" % exe, "/f"], [], false, false)
+	else:
+		code = OS.execute("reg", ["delete", RUN_KEY, "/v", "VERONIKA", "/f"], [], false, false)
+	if code == 0:
+		say("Буду запускаться вместе с Windows." if enable else "Больше не запускаюсь сама.", 3.0)
+	else:
+		say("Не получилось изменить автозапуск.", 3.0)
+
+
 # ---------- мозг ----------
 
 func say(text: String, duration := -1.0) -> void:
 	if duration < 0.0:
 		duration = clamp(text.length() * 0.07, 2.5, 15.0)
+	if not _shown:
+		if _user_hidden and not _auto_hidden and text != "…":
+			_peek(duration)   # спрятана — «выглядывает», чтобы сказать, и снова прячется
+		else:
+			return            # идёт полноэкранная игра/видео — не мешаем облачками
 	bubble.say(text, duration)
 	if duration > 0.0 and text != "…":
 		character.set_talking(true)
@@ -566,6 +720,11 @@ func _on_brain_message(msg: Dictionary) -> void:
 			character.set_music(bool(msg.get("playing", false)))
 		"attention":
 			attention()
+		"visibility":
+			set_user_hidden(not bool(msg.get("visible", true)))
+		"fullscreen":
+			_auto_hidden = bool(msg.get("active", false))
+			_apply_visibility()
 		"window_moved":
 			wanderer.on_window_moved(msg)
 		"wander":

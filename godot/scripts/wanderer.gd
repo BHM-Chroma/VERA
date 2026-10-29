@@ -178,6 +178,7 @@ func place_in_corner(pose := "", side := 0) -> void:
 	if side == 0:
 		side = -_last_side if randf() < 0.75 else _last_side
 	_last_side = side
+	character.screen_side = side
 
 	var m := await _apply_pose(pose)
 	var bbox: Rect2 = m["bbox"]
