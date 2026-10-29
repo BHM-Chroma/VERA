@@ -198,11 +198,19 @@ def window_at(x, y, tol=45):
     return None
 
 
-FULLSCREEN_SKIP_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+FULLSCREEN_SKIP_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+                           "Windows.UI.Core.CoreWindow", "XamlExplorerHostIslandWindow"}
+# живые обои и оверлеи растянуты на весь экран, но это не игра
+FULLSCREEN_SKIP_PROCESSES = ("wallpaper32", "wallpaper64", "wallpaperengine", "webwallpaper", "lively",
+                             "livelywpf", "livelycefsharp", "rainmeter", "nvidia overlay", "nvcontainer",
+                             "explorer", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
+                             "lockapp", "textinputhost", "steamwebhelper", "discord", "veronika", "godot")
+fullscreen_reason = ""
 
 
 def foreground_fullscreen():
     """Активное окно развёрнуто на весь экран поверх панели задач (игра, видео во весь экран)."""
+    global fullscreen_reason
     if not IS_WINDOWS:
         return False
     hwnd = user32.GetForegroundWindow()
@@ -210,7 +218,12 @@ def foreground_fullscreen():
         return False
     cls = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, cls, 256)
-    if cls.value in FULLSCREEN_SKIP_CLASSES:
+    if cls.value in FULLSCREEN_SKIP_CLASSES or _cloaked(hwnd):
+        return False
+    if user32.GetWindowTextLengthW(hwnd) == 0:
+        return False          # у игр и плееров есть заголовок, у обоев и служебных окон — нет
+    proc = _process_name(hwnd)
+    if proc.startswith(FULLSCREEN_SKIP_PROCESSES):
         return False
     r = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
@@ -219,7 +232,12 @@ def foreground_fullscreen():
     mi.cbSize = ctypes.sizeof(MONITORINFO)
     user32.GetMonitorInfoW(mon, ctypes.byref(mi))
     m = mi.rcMonitor
-    return r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom
+    full = r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom
+    if full:
+        title = ctypes.create_unicode_buffer(128)
+        user32.GetWindowTextW(hwnd, title, 128)
+        fullscreen_reason = f"{proc} «{title.value[:40]}» ({cls.value})"
+    return full
 
 
 _last_active = 0

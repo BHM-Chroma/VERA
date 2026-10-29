@@ -257,6 +257,14 @@ class Commands:
             self.brain.send_threadsafe({"type": "visibility", "visible": True})
             return "Я тут!"
 
+        def autohide_on(_):
+            self.brain.send_threadsafe({"type": "autohide", "enabled": True})
+            return "Хорошо, в полноэкранных играх буду прятаться."
+
+        def autohide_off(_):
+            self.brain.send_threadsafe({"type": "autohide", "enabled": False})
+            return "Хорошо, больше не прячусь в играх — буду рядом."
+
         def apps_refresh(_):
             self.brain.apps.refresh(force=True)
             return "Обновляю список программ, это займёт несколько секунд."
@@ -296,6 +304,8 @@ class Commands:
                  music_what)
         self.add("hide", ("спрячься", "скройся", "исчезни", "уйди в фон", "не мешай"), hide)
         self.add("show", ("покажись", "появись", "вернись", "выйди"), show)
+        self.add("autohide_off", ("не прячься в играх", "не прячься", "не исчезай", "оставайся на экране"), autohide_off)
+        self.add("autohide_on", ("прячься в играх", "прячься в полноэкранных", "уходи в фон в играх"), autohide_on)
         self.add("apps_refresh", ("обнови список программ", "обнови программы", "найди новые программы",
                                   "пересканируй программы"), apps_refresh)
         self.add("apps_count", ("сколько программ ты знаешь", "сколько у меня программ"), apps_count)

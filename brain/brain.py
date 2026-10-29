@@ -74,6 +74,7 @@ POKE_LINES = [
     "Нажми правой кнопкой, если хочешь написать мне.",
 ]
 LAUNCH_WORDS = ("запусти", "открой", "включи")
+LAUNCH_STEMS = ("запус", "откр", "включ")      # запусти/запустить/открой/открыть/включи/включить
 ORDINALS = {"перв": 0, "один": 0, "1": 0, "втор": 1, "два": 1, "2": 1, "трет": 2, "три": 2, "3": 2}
 CANCEL_WORDS = ("никак", "отмена", "не надо", "ничего", "забей")
 COMMAND_THRESHOLD = 70
@@ -200,10 +201,17 @@ class Brain:
 
     # ---------- обработка фраз ----------
 
+    def _is_alias(self, word):
+        """Её имя, даже с опечаткой или как его «услышал» распознаватель: «веронка», «вероника»."""
+        word = word.strip(".,!?:;")
+        if word in self.aliases:
+            return True
+        return len(word) >= 5 and any(len(a) >= 5 and fuzz.ratio(word, a) >= 80 for a in self.aliases)
+
     def _clean(self, text):
-        words = [w for w in text.lower().replace(",", " ").split()]
-        drop = set(self.aliases) | set(self.cfg["filler_words"])
-        kept = [w for w in words if w not in drop]
+        words = [w.strip(".,!?:;") for w in text.lower().replace(",", " ").split()]
+        fillers = set(self.cfg["filler_words"])
+        kept = [w for w in words if w and w not in fillers and not self._is_alias(w)]
         # «отбой отбой» -> «отбой»: распознавание часто дублирует фразу целиком
         half = len(kept) // 2
         if half and len(kept) % 2 == 0 and kept[:half] == kept[half:]:
@@ -214,7 +222,7 @@ class Brain:
     async def process(self, text, source):
         text = text.lower().strip()
         now = time.time()
-        has_alias = any(a in text for a in self.aliases)
+        has_alias = any(a in text for a in self.aliases) or any(self._is_alias(w) for w in text.split())
 
         if source == "voice":
             if self.sleep_mode:
@@ -265,12 +273,14 @@ class Brain:
 
         key, score = self.commands.recognize(cmd)
 
-        # «запусти X» / «открой X» — сначала точные команды, потом поиск программы
-        if cmd.startswith(LAUNCH_WORDS) and score < 85:
-            name = cmd.split(maxsplit=1)[1] if " " in cmd else ""
-            if name:
-                await self.open_app(name)
-                return
+        # «запусти X» / «открой X» (слово может стоять и не первым: «а запусти-ка X»)
+        # — сначала точные команды, потом поиск программы
+        if score < 85:
+            words = cmd.split()
+            for i, w in enumerate(words):
+                if w.startswith(LAUNCH_STEMS) and i + 1 < len(words):
+                    await self.open_app(" ".join(words[i + 1:]))
+                    return
 
         if key and score >= COMMAND_THRESHOLD:
             if self.commands.is_danger(key):
@@ -338,7 +348,8 @@ class Brain:
                 fs = fullscreen
             if fs != fullscreen:
                 fullscreen = fs
-                print("[окна] полноэкранное окно — прячусь" if fs else "[окна] полноэкранное закрыто — появляюсь")
+                print(f"[окна] полноэкранное окно — прячусь: {windows_info.fullscreen_reason}" if fs
+                      else "[окна] полноэкранное закрыто — появляюсь")
                 await self.broadcast({"type": "fullscreen", "active": fs})
             await asyncio.sleep(0.5)
 

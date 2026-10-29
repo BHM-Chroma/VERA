@@ -54,7 +54,7 @@ var _carry_grab := Vector2.ZERO       # точка в окне, которая �
 var _carry_ready := false             # плита уже стоит под ней
 var _carry_top := Vector2.ZERO        # верх плиты в окне (пиксели)
 
-enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART }
+enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART, AUTOHIDE }
 
 const TRAY_ICON := preload("res://assets/fx/tray.png")
 const RUN_KEY := "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
@@ -64,6 +64,9 @@ var _user_hidden := false
 var _auto_hidden := false
 var _peeking := false
 var _shown := true
+## Прятаться самой, пока открыта полноэкранная игра/видео (можно выключить в меню).
+var auto_hide := true
+var _fullscreen_now := false
 var _tray: StatusIndicator
 
 const POKE_LINES := [
@@ -82,6 +85,7 @@ func _ready() -> void:
 	wanderer.name = "Wanderer"
 	add_child(wanderer)
 	wanderer.set_enabled(bool(_settings.get_value("wander", "enabled", true)))
+	auto_hide = bool(_settings.get_value("background", "auto_hide", true))
 	platform = Platform.new()
 	platform.name = "Platform"
 	add_child(platform)
@@ -431,6 +435,7 @@ func _build_menu() -> void:
 	_menu.add_item("Вернуть в угол экрана", MenuId.RESET_POS)
 	_menu.add_separator()
 	_menu.add_item("Спрятаться (значок у часов)", MenuId.HIDE)
+	_menu.add_check_item("Прятаться в полноэкранных играх", MenuId.AUTOHIDE)
 	_menu.add_check_item("Запускать вместе с Windows", MenuId.AUTOSTART)
 	_menu.add_separator()
 	_menu.add_item("Выход", MenuId.QUIT)
@@ -459,6 +464,8 @@ func _on_menu(id: int) -> void:
 			set_user_hidden(true)
 		MenuId.AUTOSTART:
 			_set_autostart(not _autostart_enabled())
+		MenuId.AUTOHIDE:
+			set_auto_hide(not auto_hide)
 		MenuId.QUIT:
 			_quit()
 
@@ -548,6 +555,7 @@ func _open_menu(at: Vector2i) -> void:
 	_menu.set_item_checked(_menu.get_item_index(MenuId.ON_TOP), get_window().always_on_top)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.WANDER), wanderer.enabled)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOSTART), _autostart_enabled())
+	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOHIDE), auto_hide)
 	_menu.position = at
 	_menu.popup()
 
@@ -566,11 +574,28 @@ func _build_tray() -> void:
 func _on_tray_pressed(button: int, pos: Vector2i) -> void:
 	attention()
 	if button == MOUSE_BUTTON_LEFT:
+		if _auto_hidden:
+			# спряталась сама (полноэкранное окно) — по клику по значку показываемся всё равно
+			_auto_hidden = false
+			_apply_visibility()
+			_vanish_in()
+			return
 		set_user_hidden(not _user_hidden)
 	elif button == MOUSE_BUTTON_RIGHT:
 		if _user_hidden:
 			set_user_hidden(false)   # меню — часть окна персонажа, поэтому сначала показываемся
+		if _auto_hidden:
+			_auto_hidden = false
+			_apply_visibility()
 		_open_menu(pos - Vector2i(0, 260))
+
+
+func set_auto_hide(value: bool) -> void:
+	auto_hide = value
+	_settings.set_value("background", "auto_hide", value)
+	_settings.save(SETTINGS_PATH)
+	_auto_hidden = _fullscreen_now and auto_hide
+	_apply_visibility()
 
 
 func set_user_hidden(value: bool) -> void:
@@ -723,8 +748,11 @@ func _on_brain_message(msg: Dictionary) -> void:
 		"visibility":
 			set_user_hidden(not bool(msg.get("visible", true)))
 		"fullscreen":
-			_auto_hidden = bool(msg.get("active", false))
+			_fullscreen_now = bool(msg.get("active", false))
+			_auto_hidden = _fullscreen_now and auto_hide
 			_apply_visibility()
+		"autohide":
+			set_auto_hide(bool(msg.get("enabled", true)))
 		"window_moved":
 			wanderer.on_window_moved(msg)
 		"wander":

@@ -45,7 +45,8 @@ SYNONYMS = {
     "фотошоп": "photoshop", "иллюстратор": "illustrator", "премьер": "premiere pro",
     "ворд": "word", "эксель": "excel", "поверпоинт": "powerpoint", "пауэрпоинт": "powerpoint",
     "блокнот": "notepad", "пэйнт": "paint", "паинт": "paint", "пейнт": "paint", "калькулятор": "calculator", "проводник": "file explorer",
-    "панель управления": "control panel", "параметры": "settings", "настройки": "settings",
+    "панель управления": "control panel", "параметры": "параметры windows", "настройки": "параметры windows",
+    "настройки windows": "параметры windows",
     "диспетчер задач": "task manager", "терминал": "terminal", "командная строка": "command prompt",
     "вс код": "visual studio code", "вскод": "visual studio code", "визуал студио": "visual studio",
     "обс": "obs studio", "обс студио": "obs studio", "зум": "zoom", "скайп": "skype",
@@ -226,12 +227,29 @@ def _app_paths():
     return res
 
 
+# Системное, чего иногда нет в меню «Пуск» (или оно называется по-английски)
+SYSTEM_APPS = [
+    ("Параметры Windows", "url", "ms-settings:"),
+    ("Диспетчер задач", "file", "taskmgr.exe"),
+    ("Панель управления", "file", "control.exe"),
+    ("Проводник", "file", "explorer.exe"),
+    ("Командная строка", "file", "cmd.exe"),
+    ("Блокнот", "file", "notepad.exe"),
+    ("Калькулятор", "file", "calc.exe"),
+    ("Paint", "file", "mspaint.exe"),
+]
+
+
+def _system_apps():
+    return [{"name": n, "kind": k, "target": t, "source": "Windows"} for n, k, t in SYSTEM_APPS]
+
+
 def build_index():
     if not IS_WINDOWS:
         return []
     started = time.time()
     entries = []
-    for collect in (_start_apps, _desktops, _steam_games, _epic_games, _app_paths):
+    for collect in (_start_apps, _desktops, _steam_games, _epic_games, _app_paths, _system_apps):
         try:
             entries += collect()
         except Exception as e:  # noqa: BLE001 — один источник сломался, остальные работают
