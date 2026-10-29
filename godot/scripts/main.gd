@@ -41,6 +41,14 @@ var music := {}
 ## Зазор между нижними костями позы и верхом плиты (пиксели; толщина ног/подошв).
 @export var carry_plate_gap := 6.0
 var _carry := false
+## Махание при запуске: во сколько раз быстрее, чем в Blender.
+@export var wave_speed := 1.6
+## «Скука»: сколько секунд без внимания (клик, перетаскивание, голос, чат) до того,
+## как она сядет, и до того, как уснёт.
+@export var bored_sit_after := 150.0
+@export var bored_sleep_after := 480.0
+var _idle_time := 0.0
+var _sleep_requested := false
 var _carry_pos := Vector2.ZERO        # позиция окна (дробная, для плавности)
 var _carry_grab := Vector2.ZERO       # точка в окне, которая должна быть под курсором
 var _carry_ready := false             # плита уже стоит под ней
@@ -89,7 +97,7 @@ func _ready() -> void:
 func _wave_hello() -> void:
 	await get_tree().create_timer(0.3).timeout
 	if character.current_pose == character.idle_animation and not _dragging:
-		character.play("wave", 0.2)
+		character.play("wave", 0.2, wave_speed)
 
 
 # ---------- запуск мозга ----------
@@ -152,6 +160,7 @@ func _save_position() -> void:
 func _process(delta: float) -> void:
 	if _carry:
 		_update_carry(delta)
+	_update_boredom(delta)
 	# ноты — пока играет музыка и она видна (не рассыпается, не спит)
 	var want_notes := bool(music.get("playing", false)) and not _sleeping \
 		and not wanderer.busy and character.vanish <= 0.01
@@ -213,6 +222,10 @@ func _input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				if _sleeping or _sleep_requested:
+					_request_wake()   # спит — клик её будит
+					return
+				attention()
 				if wanderer.busy:
 					return   # она как раз рассыпается/собирается — не хватаем
 				_dragging = true
@@ -228,6 +241,7 @@ func _input(event: InputEvent) -> void:
 				else:
 					_on_poke()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			attention()
 			_menu.set_item_checked(_menu.get_item_index(MenuId.ON_TOP), get_window().always_on_top)
 			_menu.set_item_checked(_menu.get_item_index(MenuId.WANDER), wanderer.enabled)
 			_menu.position = DisplayServer.mouse_get_position()
@@ -328,6 +342,55 @@ func _update_carry(delta: float) -> void:
 	else:
 		_carry_pos = _carry_pos.lerp(target, 1.0 - exp(-carry_follow_speed * delta))
 	DisplayServer.window_set_position(Vector2i(_carry_pos.round()))
+
+
+# ---------- скука и сон ----------
+
+## С ней пообщались — отсчёт «скуки» сначала.
+func attention() -> void:
+	_idle_time = 0.0
+
+
+func _update_boredom(delta: float) -> void:
+	if _sleeping or _sleep_requested:
+		return
+	if _dragging or _carry or _menu.visible or _chat_window.visible:
+		_idle_time = 0.0
+		return
+	_idle_time += delta
+	if wanderer.busy or character.talking:
+		return
+	var playing := bool(music.get("playing", false))
+	# долго скучает — засыпает (но не под музыку: она её слушает)
+	if _idle_time >= bored_sleep_after and not playing:
+		_fall_asleep()
+		return
+	# заскучала — садится прямо там, где стоит
+	if _idle_time >= bored_sit_after and character.current_pose == character.idle_animation \
+			and String(character.anim.current_animation) in [character.idle_animation, character.idle_animation + "_music"]:
+		character.set_pose("idle_sit", 0.8)
+
+
+func _fall_asleep() -> void:
+	_sleep_requested = true
+	print("[скука] засыпаю")
+	if brain.connected:
+		brain.send({"type": "sleep"})   # мозг включит режим сна и пришлёт anim/face
+	else:
+		_sleeping = true
+		character.force_face(2)
+		wanderer.go_to_sleep()
+
+
+func _request_wake() -> void:
+	attention()
+	_sleep_requested = false
+	if brain.connected:
+		brain.send({"type": "wake"})
+	else:
+		_sleeping = false
+		character.force_face(-1)
+		wanderer.wake_up()
 
 
 func _on_poke() -> void:
@@ -494,11 +557,15 @@ func _on_brain_message(msg: Dictionary) -> void:
 		"face":
 			character.force_face(int(msg.get("index", -1)))
 			_sleeping = int(msg.get("index", -1)) == 2
+			_sleep_requested = false
+			attention()
 		"stats":
 			_stats = msg
 		"music":
 			music = msg
 			character.set_music(bool(msg.get("playing", false)))
+		"attention":
+			attention()
 		"window_moved":
 			wanderer.on_window_moved(msg)
 		"wander":

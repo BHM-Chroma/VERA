@@ -140,6 +140,18 @@ class Brain:
         elif kind == "shutdown":
             print("[мозг] персонаж закрыт через меню — завершаюсь")
             self.quit_event.set()
+        elif kind == "sleep":
+            # заскучала (долго не трогали) — засыпает, как по команде «спи»
+            if not self.sleep_mode:
+                print("[мозг] её долго не трогали — засыпает")
+                self.sleep_mode = True
+                await self._sleep_visual(True)
+        elif kind == "wake":
+            # клик по спящей
+            if self.sleep_mode:
+                self.sleep_mode = False
+                await self._sleep_visual(False)
+                await self.say(random.choice(["Ой, я задремала…", "Я тут! Просто прикрыла глаза.", "Мм? Я проснулась."]))
         elif kind == "follow_window":
             # персонаж сел на окно — сами сообщаем, когда оно сдвинется
             self.follow_hwnd = int(msg.get("hwnd") or 0)
@@ -214,6 +226,7 @@ class Brain:
 
         cmd = self._clean(text)
         self.last_interaction = now
+        await self.broadcast({"type": "attention"})   # с ней общаются — ей не скучно
 
         # подтверждение опасной команды
         if self.pending:

@@ -50,6 +50,15 @@ func _spawn() -> void:
 	var side := -1.0 if randf() < 0.5 else 1.0
 	var start := head + Vector2(side * randf_range(60.0, 95.0), randf_range(-40.0, 0.0))
 
+	# Ноты не должны выходить за видимую часть окна (окно бывает частично за краем экрана,
+	# например когда она сидит на окне у верха экрана).
+	var vis := _visible_rect()
+	var edge := 28.0                      # полразмера ноты с запасом
+	var side_room := edge + 52.0          # + максимальный снос и покачивание
+	start.x = clampf(start.x, vis.position.x + side_room, vis.end.x - side_room)
+	start.y = clampf(start.y, vis.position.y + edge + 60.0, vis.end.y - edge)
+	var rise_px := minf(rise, start.y - (vis.position.y + edge))
+
 	var s := Sprite3D.new()
 	s.texture = TEXTURES.pick_random()
 	s.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
@@ -75,7 +84,7 @@ func _spawn() -> void:
 			return
 		# всплывает, покачиваясь; шаг по пикселям — чтобы движение было «пиксельным»
 		var x := drift * t + sin(phase + t * 7.0) * sway
-		var y := rise / px * t
+		var y := rise_px / px * t
 		var pos := p0 + Vector3(x, y, 0.0)
 		pos.x = snappedf(pos.x, 1.0 / px)
 		pos.y = snappedf(pos.y, 1.0 / px)
@@ -84,6 +93,16 @@ func _spawn() -> void:
 		s.modulate.a = 1.0 - smoothstep(0.65, 1.0, t)
 	, 0.0, 1.0, life)
 	tw.chain().tween_callback(s.queue_free)
+
+
+## Видимая часть окна персонажа (пиксели окна): окно ∩ экран.
+func _visible_rect() -> Rect2:
+	var win := Rect2(Vector2.ZERO, Vector2(main.window_size))
+	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	var wpos := Vector2(DisplayServer.window_get_position())
+	var on_screen := Rect2(Vector2(scr.position) - wpos, Vector2(scr.size))
+	var r := win.intersection(on_screen)
+	return r if r.has_area() else win
 
 
 ## Убрать все ноты (например, когда она рассыпается или прячется).

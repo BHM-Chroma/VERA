@@ -260,13 +260,13 @@ func set_music(value: bool) -> void:
 
 
 ## Играет анимацию по имени. Если такой нет — остаётся idle.
-func play(anim_name: String, blend := 0.25) -> bool:
+func play(anim_name: String, blend := 0.25, speed := 1.0) -> bool:
 	if anim == null:
 		return false
 	var found := _resolve_animation(anim_name)
 	if found == "":
 		return false
-	anim.play(found, blend)
+	anim.play(found, blend, speed)
 	_anim_has_face_track = _has_face_track(anim.get_animation(found))
 	return true
 
