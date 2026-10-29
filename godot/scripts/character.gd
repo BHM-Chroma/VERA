@@ -37,6 +37,8 @@ var materials: Array[ShaderMaterial] = []
 var all_materials: Array[ShaderMaterial] = []
 ## Текущая поза (имя анимации): idle, idle_sit, idle_lying, idle_sit_on_Window...
 var current_pose := "idle"
+## Сейчас играет музыка (позы берутся из вариантов «…_music»).
+var music := false
 ## 0 — виден, 1 — рассыпался (эффект перемещения).
 var vanish := 0.0:
 	set(v):
@@ -232,7 +234,29 @@ func set_pose(pose: String, blend := 0.25) -> bool:
 	if found == "":
 		return false
 	current_pose = found
-	return play(found, blend)
+	return play(_pose_variant(found), blend)
+
+
+## Играет музыка: вместо позы — её вариант «…_music», если он есть в модели.
+func _pose_variant(pose: String) -> String:
+	if music:
+		var m := _resolve_animation(pose + "_music")
+		if m != "":
+			return m
+	return pose
+
+
+## Включить/выключить «музыкальные» варианты поз (плавно, без смены самой позы).
+func set_music(value: bool) -> void:
+	if value == music:
+		return
+	music = value
+	if anim == null:
+		return
+	# переключаем, только если сейчас играет сама поза (а не разовая анимация вроде махания)
+	var cur := String(anim.current_animation)
+	if cur == current_pose or cur == current_pose + "_music" or cur == "":
+		play(_pose_variant(current_pose), 0.4)
 
 
 ## Играет анимацию по имени. Если такой нет — остаётся idle.
@@ -272,7 +296,7 @@ func _has_face_track(a: Animation) -> bool:
 func _on_animation_finished(anim_name: StringName) -> void:
 	var a := anim.get_animation(anim_name)
 	if a and a.loop_mode == Animation.LOOP_NONE:
-		play(current_pose)
+		play(_pose_variant(current_pose))
 
 
 ## Её взяли мышкой: садится (drag_sit), модель плавно возвращается в центр окна.

@@ -231,6 +231,24 @@ class Commands:
             self.brain.send_threadsafe({"type": "wander", "enabled": False})
             return "Хорошо, стою на месте."
 
+        def music_toggle(_):
+            import music
+            music.press("play_pause")
+            return "Пауза." if self.brain.music_state.get("playing") else "Включаю музыку."
+
+        def music_next(_):
+            import music
+            music.press("next")
+            return "Следующий трек."
+
+        def music_prev(_):
+            import music
+            music.press("prev")
+            return "Предыдущий трек."
+
+        def music_what(_):
+            return self.brain.music_info()
+
         def quit_brain(_):
             self.brain.request_quit()
             return "Хорошо, завершаю работу. До следующего запуска!"
@@ -253,6 +271,13 @@ class Commands:
         self.add("stats", ("как дела у компьютера", "состояние пк", "нагрузка", "как компьютер"), stats)
         self.add("wander_on", ("погуляй", "гуляй по экрану", "можешь гулять", "перейди в другое место"), wander_on)
         self.add("wander_off", ("стой на месте", "не гуляй", "хватит гулять", "не уходи"), wander_off)
+        self.add("music_toggle", ("пауза", "поставь на паузу", "останови музыку", "выключи музыку",
+                                  "продолжи музыку", "включи музыку", "сними с паузы"), music_toggle)
+        self.add("music_next", ("следующий трек", "следующая песня", "переключи трек", "переключи песню",
+                                "другую песню", "следующую"), music_next)
+        self.add("music_prev", ("предыдущий трек", "предыдущая песня", "верни песню", "прошлый трек"), music_prev)
+        self.add("music_what", ("что играет", "что за песня", "какая песня", "что за трек", "что сейчас играет"),
+                 music_what)
         self.add("shutdown", ("отбой", "выключись", "завершай работу"), quit_brain, danger=True)
 
 

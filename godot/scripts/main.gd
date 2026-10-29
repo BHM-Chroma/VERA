@@ -28,6 +28,9 @@ var _settings := ConfigFile.new()
 var _sleeping := false
 var wanderer: Wanderer
 var platform: Platform
+var notes: MusicNotes
+## Что сейчас играет (от мозга): {"playing": bool, "title": "...", "artist": "..."}.
+var music := {}
 
 ## Переноска: плита под ней плавно догоняет курсор.
 @export var carry_follow_speed := 16.0
@@ -64,6 +67,9 @@ func _ready() -> void:
 	platform = Platform.new()
 	platform.name = "Platform"
 	add_child(platform)
+	notes = MusicNotes.new()
+	notes.name = "MusicNotes"
+	add_child(notes)
 	_restore_position()
 	_build_menu()
 	_build_chat_window()
@@ -146,6 +152,13 @@ func _save_position() -> void:
 func _process(delta: float) -> void:
 	if _carry:
 		_update_carry(delta)
+	# ноты — пока играет музыка и она видна (не рассыпается, не спит)
+	var want_notes := bool(music.get("playing", false)) and not _sleeping \
+		and not wanderer.busy and character.vanish <= 0.01
+	if want_notes != notes.active:
+		notes.active = want_notes
+	if character.vanish > 0.01 and notes.get_child_count() > 0:
+		notes.clear()   # рассыпается — ноты пропадают сразу (иначе дотают сами)
 	_pt_timer -= delta
 	if _pt_timer <= 0.0 and not _dragging:
 		_pt_timer = passthrough_interval
@@ -483,6 +496,9 @@ func _on_brain_message(msg: Dictionary) -> void:
 			_sleeping = int(msg.get("index", -1)) == 2
 		"stats":
 			_stats = msg
+		"music":
+			music = msg
+			character.set_music(bool(msg.get("playing", false)))
 		"window_moved":
 			wanderer.on_window_moved(msg)
 		"wander":

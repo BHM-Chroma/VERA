@@ -73,14 +73,14 @@ jobs:
 
       - name: Проверка импорта
         working-directory: brain
-        run: python -c "import brain, commands, llm, monitor, voice, windows_info, memory, paths; print('ok')"
+        run: python -c "import brain, commands, llm, monitor, voice, windows_info, memory, paths, music; print('ok', music._SessionManager)"
 
       - name: Сборка
         working-directory: brain
         run: >
           pyinstaller --noconfirm --clean --onedir --noconsole --name VeronikaBrain
           --collect-all vosk --collect-data speech_recognition
-          --hidden-import pycaw.pycaw --hidden-import win32timezone
+          --hidden-import pycaw.pycaw --hidden-import win32timezone --collect-all winrt
           brain.py
 
       - uses: actions/upload-artifact@v4

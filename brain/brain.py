@@ -20,6 +20,7 @@ from llm import LLM
 from monitor import Monitor
 from voice import VoiceListener
 import windows_info
+import music
 
 from paths import BASE_DIR
 
@@ -89,6 +90,8 @@ class Brain:
         self.aliases = [a.lower() for a in cfg["aliases"]]
         self.follow_hwnd = 0
         self._follow_last = None
+        self.music_state = {"playing": False}
+        self._last_music_comment = 0.0
 
     # ---------- связь с персонажем ----------
 
@@ -128,6 +131,8 @@ class Brain:
         if kind == "hello":
             windows_info.set_own_pid(msg.get("pid"))
             await self.broadcast({"type": "stats", **self.monitor.stats})
+            if self.music_state.get("playing"):
+                await self.broadcast({"type": "music", **self.music_state})
         elif kind == "chat":
             text = str(msg.get("text", ""))
             print(f"[Ты]: {text}")
@@ -278,6 +283,56 @@ class Brain:
                     self.follow_hwnd = 0
             await asyncio.sleep(0.01)
 
+    async def music_loop(self):
+        """Раз в секунду смотрим, что играет. Сообщаем персонажу (анимации, ноты)
+        и иногда комментируем новый трек."""
+        first = True
+        while True:
+            try:
+                st = await music.get_state()
+            except Exception as e:  # noqa: BLE001
+                print(f"[музыка] ошибка: {e}")
+                st = {"playing": False, "title": "", "artist": "", "app": ""}
+            prev = self.music_state
+            changed_track = st["playing"] and (st["title"], st["artist"]) != (prev.get("title"), prev.get("artist"))
+            if st["playing"] != prev.get("playing") or changed_track:
+                self.music_state = st
+                await self.broadcast({"type": "music", **st})
+                if st["playing"]:
+                    print(f"[музыка] играет: {st['artist']} — {st['title']} ({st['app']})")
+                    if changed_track and not first:
+                        await self._comment_track(st)
+                else:
+                    print("[музыка] пауза / тишина")
+            first = False
+            await asyncio.sleep(1.0)
+
+    async def _comment_track(self, st):
+        mcfg = self.cfg.get("music", {})
+        if self.sleep_mode or not mcfg.get("comments", True) or not st["title"]:
+            return
+        now = time.time()
+        if now - self._last_music_comment < mcfg.get("comment_cooldown_sec", 180):
+            return
+        if random.random() > mcfg.get("comment_chance", 0.4):
+            return
+        self._last_music_comment = now
+        t, a = st["title"], st["artist"]
+        lines = [
+            f"О, «{t}»! Хороший выбор.",
+            f"{a} — «{t}». Мне нравится!",
+            f"Ммм, «{t}»… под это приятно работать.",
+            f"Включили {a}? Я тоже послушаю.",
+            f"«{t}» — сделать погромче?",
+        ] if a else [f"О, «{t}»! Хороший выбор.", f"Ммм, «{t}»… под это приятно работать."]
+        await self.say(random.choice(lines))
+
+    def music_info(self):
+        st = self.music_state
+        if not st.get("playing"):
+            return "Сейчас ничего не играет."
+        return f"Играет «{st['title']}» — {st['artist']}." if st.get("artist") else f"Играет «{st['title']}»."
+
     async def monitor_loop(self):
         while True:
             stats = await asyncio.to_thread(self.monitor.sample)
@@ -307,6 +362,7 @@ class Brain:
             mon = asyncio.create_task(self.monitor_loop())
             win_task = asyncio.create_task(self.active_window_loop())
             follow_task = asyncio.create_task(self.follow_loop())
+            music_task = asyncio.create_task(self.music_loop())
             listener = await asyncio.to_thread(self.start_voice)
             await self.quit_event.wait()
             await self.broadcast({"type": "quit"})
@@ -314,6 +370,7 @@ class Brain:
             mon.cancel()
             win_task.cancel()
             follow_task.cancel()
+            music_task.cancel()
             if listener:
                 listener.stop()
 

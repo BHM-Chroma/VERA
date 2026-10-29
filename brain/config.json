@@ -67,5 +67,10 @@
             "url": "https://web.telegram.org/a/",
             "reply": "Открываю Telegram"
         }
+    },
+    "music": {
+        "comments": true,
+        "comment_chance": 0.4,
+        "comment_cooldown_sec": 180
     }
 }
