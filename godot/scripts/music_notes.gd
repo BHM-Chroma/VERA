@@ -92,7 +92,8 @@ func _spawn() -> void:
 		s.global_position = pos
 		s.rotation.z = sin(phase + t * 5.0) * 0.25
 		# появляется и исчезает глитчем
-		var g := 1.0 - smoothstep(0.0, 0.12, t) + smoothstep(0.7, 1.0, t)
+		# коротко «помехает» при появлении и в самом конце, остальное время — целая
+		var g := 1.0 - smoothstep(0.0, 0.08, t) + smoothstep(0.9, 1.0, t)
 		s.set_instance_shader_parameter("glitch", clampf(g, 0.0, 1.0))
 	, 0.0, 1.0, life)
 	tw.chain().tween_callback(s.queue_free)

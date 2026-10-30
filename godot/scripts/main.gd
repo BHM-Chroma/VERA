@@ -229,6 +229,9 @@ func _startup_peek() -> void:
 		wx = int(scr.end.x - peek_head_inside - head.x)
 	var wy := clampi(int(scr.position.y + scr.size.y * 0.42 - head.y), scr.position.y - 60, scr.end.y - window_size.y)
 	DisplayServer.window_set_position(Vector2i(wx, wy))
+	# за краем экрана может стоять другой монитор — там её не рисуем
+	var vis := Rect2(Vector2(scr.position - Vector2i(wx, wy)), Vector2(scr.size)).intersection(Rect2(Vector2.ZERO, Vector2(window_size)))
+	_glitch_mat.set_shader_parameter("clip", Vector4(vis.position.x, vis.position.y, vis.size.x, vis.size.y))
 
 	character.anim.seek(0.0, true)
 	character.play(peek_anim, 0.0)
@@ -243,6 +246,7 @@ func _startup_peek() -> void:
 	tw = create_tween()
 	tw.tween_property(character, "vanish", 1.0, 0.35)
 	await tw.finished
+	_glitch_mat.set_shader_parameter("clip", Vector4(-100000.0, -100000.0, 200000.0, 200000.0))
 	character.position = Vector3.ZERO
 	character.rotation_degrees.y = 0.0
 	character.scale = Vector3.ONE

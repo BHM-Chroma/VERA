@@ -2,6 +2,7 @@
 // и ломает её — сдвиг полос, расслоение цветов, битые блоки, сканлайны.
 // amount  — сила помех (0 — чисто), vanish — исчезновение (1 — её не видно).
 shader_type canvas_item;
+render_mode blend_disabled;   // заменяем картинку целиком: так можно и «стирать» пиксели (исчезновение, обрезка)
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
 uniform float amount : hint_range(0.0, 1.0) = 0.0;
@@ -10,6 +11,9 @@ uniform int style = 0;                 // 0 — полосы+RGB, 1 — биты
 uniform vec4 neon1 : source_color = vec4(1.0, 0.12, 0.45, 1.0);
 uniform vec4 neon2 : source_color = vec4(0.45, 0.2, 1.0, 1.0);
 uniform float fps = 18.0;              // как часто «перещёлкиваются» помехи
+// Видимая область окна (пиксели окна: x, y, ширина, высота). Всё вне неё не рисуется —
+// например, когда она выглядывает из-за края экрана, а за краем стоит второй монитор.
+uniform vec4 clip = vec4(-100000.0, -100000.0, 200000.0, 200000.0);
 
 float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
@@ -66,6 +70,9 @@ void fragment() {
 		float gone = step(rv, vanish * 1.15 - 0.1);
 		col.a *= 1.0 - gone;
 		col.a *= 1.0 - smoothstep(0.85, 1.0, vanish);
+	}
+	if (frag.x < clip.x || frag.y < clip.y || frag.x > clip.x + clip.z || frag.y > clip.y + clip.w) {
+		col.a = 0.0;
 	}
 	COLOR = col;
 }

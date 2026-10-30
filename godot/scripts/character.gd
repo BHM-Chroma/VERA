@@ -37,6 +37,9 @@ var materials: Array[ShaderMaterial] = []
 var all_materials: Array[ShaderMaterial] = []
 ## Текущая поза (имя анимации): idle, idle_sit, idle_lying, idle_sit_on_Window...
 var current_pose := "idle"
+## Сколько секунд перетекать из конца цикла в его начало.
+@export var loop_blend := 0.6
+var _loop_anims := {}
 ## Сейчас играет музыка (позы берутся из вариантов «…_music»).
 var music := false
 ## С какой стороны экрана она сейчас (-1 слева, 1 справа). Некоторые позы зеркалятся,
@@ -95,7 +98,12 @@ func _ready() -> void:
 		anim.animation_finished.connect(_on_animation_finished)
 		for anim_name in anim.get_animation_list():
 			var a := anim.get_animation(anim_name)
-			a.loop_mode = Animation.LOOP_LINEAR if is_looping_name(anim_name) else Animation.LOOP_NONE
+			# Циклы не зацикливаем «жёстко»: если последний кадр в Blender не совпадает с первым,
+			# кости (особенно волосы) дёргаются на стыке. Вместо этого в конце плавно
+			# перетекаем в начало (_on_animation_finished, loop_blend).
+			a.loop_mode = Animation.LOOP_NONE
+			if is_looping_name(anim_name):
+				_loop_anims[anim_name] = true
 			_make_face_track_stepped(a)
 	play(idle_animation)
 
@@ -324,9 +332,14 @@ func _has_face_track(a: Animation) -> bool:
 
 
 func _on_animation_finished(anim_name: StringName) -> void:
-	var a := anim.get_animation(anim_name)
-	if a and a.loop_mode == Animation.LOOP_NONE:
-		play(_pose_variant(current_pose))
+	if _loop_anims.has(String(anim_name)):
+		# цикл закончился — заново с начала, с мягким перетеканием из последнего кадра в первый
+		var again := String(anim_name)
+		if again.to_lower() in [current_pose.to_lower(), (current_pose + "_music").to_lower()]:
+			again = _pose_variant(current_pose)   # музыка могла начаться/закончиться
+		anim.play(again, loop_blend)
+		return
+	play(_pose_variant(current_pose))
 
 
 ## Её взяли мышкой: садится (drag_sit), модель плавно возвращается в центр окна.
