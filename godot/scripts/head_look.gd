@@ -3,8 +3,9 @@ extends SkeletonModifier3D
 ## Голова поворачивается к курсору, когда он рядом (в пределах radius пикселей).
 ## Работает поверх анимации: берёт позу из анимации и чуть доворачивает голову.
 
-## Кость головы (AutoRig Pro: head.x).
-@export var bone_name := "head.x"
+## Кость, которую поворачиваем. c_head.x — родитель и головы (head.x), и всех прядей волос,
+## поэтому голова с волосами поворачиваются одним целым.
+@export var bone_name := "c_head.x"
 ## Радиус, в котором она следит за мышкой (пиксели окна от головы).
 @export var radius := 350.0
 ## «Глубина» взгляда: чем больше, тем меньше поворот на тот же сдвиг курсора.
@@ -29,6 +30,8 @@ func _ready() -> void:
 	var skel := get_skeleton()
 	if skel:
 		_bone = skel.find_bone(bone_name)
+		if _bone == -1:
+			_bone = skel.find_bone("head.x")
 		if _bone == -1:
 			_bone = skel.find_bone("head")
 	_last_ticks = Time.get_ticks_msec()

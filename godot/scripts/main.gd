@@ -168,8 +168,9 @@ func _update_ambient_glitch(delta: float) -> void:
 @export var peek_anim := "idle_screen_start_anim"
 ## Сколько секунд анимации играть (дальше в Blender она уже стоит на месте).
 @export var peek_length := 3.5
-## Насколько далеко она высовывается из-за края (пиксели).
-@export var peek_depth := 190.0
+## Насколько голова заходит в экран из-за края (пиксели от края до центра головы).
+## Как в Blender: край экрана режет её голову почти посередине, тело — за краем.
+@export var peek_head_inside := 35.0
 
 
 func _startup_peek() -> void:
@@ -198,13 +199,18 @@ func _startup_peek() -> void:
 	var bbox: Rect2 = m["bbox"]
 	var head: Vector2 = m["head"]
 	var px := float(window_size.y) / camera.size
-	# внутри окна: высовывается на peek_depth из-за своего края окна, по высоте — целиком в окне
-	var dx := (peek_depth - bbox.end.x) if side < 0 else (window_size.x - peek_depth - bbox.position.x)
+	# внутри окна: голова по центру окна, по высоте — вся она в окне
+	var dx := window_size.x * 0.5 - head.x
 	var dy := 70.0 - bbox.position.y
 	character.position = Vector3(dx / px, -dy / px, 0.0)
 	head += Vector2(dx, dy)
-	# окно — вплотную к краю экрана, голова — чуть выше середины экрана
-	var wx := scr.position.x if side < 0 else scr.end.x - window_size.x
+	# окно заходит за край экрана так, что в экране видна только голова (центр — на peek_head_inside от края);
+	# тело остаётся за краем, как в Blender
+	var wx: int
+	if side < 0:
+		wx = int(scr.position.x + peek_head_inside - head.x)
+	else:
+		wx = int(scr.end.x - peek_head_inside - head.x)
 	var wy := clampi(int(scr.position.y + scr.size.y * 0.42 - head.y), scr.position.y - 60, scr.end.y - window_size.y)
 	DisplayServer.window_set_position(Vector2i(wx, wy))
 
