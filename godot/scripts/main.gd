@@ -111,10 +111,16 @@ func _ready() -> void:
 ## Глитч поверх всего окна (она, плита, ноты). Облачко — выше, его не ломаем.
 @export var glitch_style := 2          # «плохой сигнал»
 ## Случайные короткие «помехи» раз в столько секунд (0 — выключить); под музыку — чаще.
-@export var ambient_glitch_min := 180.0
-@export var ambient_glitch_max := 360.0
-@export var music_glitch_min := 40.0
-@export var music_glitch_max := 90.0
+@export var ambient_glitch_min := 60.0
+@export var ambient_glitch_max := 150.0
+@export var music_glitch_min := 25.0
+@export var music_glitch_max := 60.0
+## Мелкие помехи (короткие подёргивания) — чаще; под музыку — ещё чаще.
+@export var micro_glitch_min := 8.0
+@export var micro_glitch_max := 20.0
+@export var micro_music_min := 4.0
+@export var micro_music_max := 10.0
+var _micro_timer := 10.0
 var _glitch_mat: ShaderMaterial
 var _glitch_pulse_tw: Tween
 var _ambient_timer := 90.0
@@ -160,7 +166,12 @@ func _update_ambient_glitch(delta: float) -> void:
 	if _ambient_timer <= 0.0:
 		_ambient_timer = randf_range(music_glitch_min, music_glitch_max) if playing \
 			else randf_range(ambient_glitch_min, ambient_glitch_max)
-		glitch_pulse(randf_range(0.35, 0.7), randf_range(0.15, 0.4))
+		glitch_pulse(randf_range(0.5, 0.8), randf_range(0.2, 0.45))
+	_micro_timer -= delta
+	if _micro_timer <= 0.0:
+		_micro_timer = randf_range(micro_music_min, micro_music_max) if playing \
+			else randf_range(micro_glitch_min, micro_glitch_max)
+		glitch_pulse(randf_range(0.18, 0.35), randf_range(0.06, 0.14))
 
 
 ## При запуске выглядывает из-за края экрана (idle_screen_start_anim), потом с глитчем
@@ -171,6 +182,9 @@ func _update_ambient_glitch(delta: float) -> void:
 ## Насколько голова заходит в экран из-за края (пиксели от края до центра головы).
 ## Как в Blender: край экрана режет её голову почти посередине, тело — за краем.
 @export var peek_head_inside := 35.0
+## Поворот вокруг своей оси при выглядывании (градусы, «к краю» экрана) и размер.
+@export var peek_yaw := 13.0
+@export var peek_scale := 1.15
 
 
 func _startup_peek() -> void:
@@ -190,7 +204,9 @@ func _startup_peek() -> void:
 	# считаем, где она в анимации, пока её не видно
 	character.vanish = 1.0
 	character.position = Vector3.ZERO
-	character.scale.x = 1.0 if side < 0 else -1.0       # в Blender выглядывает слева
+	# в Blender выглядывает слева; справа — зеркально. Чуть крупнее и развёрнута к краю экрана.
+	character.scale = Vector3(peek_scale if side < 0 else -peek_scale, peek_scale, peek_scale)
+	character.rotation_degrees.y = peek_yaw * side
 	character.play(peek_anim, 0.0)
 	character.anim.seek(2.0, true)
 	await get_tree().process_frame
@@ -228,6 +244,8 @@ func _startup_peek() -> void:
 	tw.tween_property(character, "vanish", 1.0, 0.35)
 	await tw.finished
 	character.position = Vector3.ZERO
+	character.rotation_degrees.y = 0.0
+	character.scale = Vector3.ONE
 	character.screen_side = side
 	character.set_pose(character.idle_animation, 0.0)
 	DisplayServer.window_set_position(final_pos)
@@ -517,6 +535,7 @@ func _update_boredom(delta: float) -> void:
 		character.screen_side = _screen_side()
 		# садится «прямо» (idle_sit_default), а если такой позы нет — как раньше
 		character.set_pose("idle_sit_default" if character.has_animation("idle_sit_default") else "idle_sit", 0.8)
+		glitch_pulse(0.4, 0.25)
 
 
 ## С какой стороны экрана она сейчас: -1 — левая половина, 1 — правая.
@@ -549,6 +568,7 @@ func _request_wake() -> void:
 
 
 func _on_poke() -> void:
+	glitch_pulse(0.35, 0.15)
 	if brain.connected:
 		brain.send({"type": "poke"})
 	else:
@@ -836,6 +856,8 @@ func say(text: String, duration := -1.0) -> void:
 			return            # идёт полноэкранная игра/видео — не мешаем облачками
 	bubble.say(text, duration)
 	if duration > 0.0 and text != "…":
+		if not character.talking:
+			glitch_pulse(0.25, 0.12)
 		character.set_talking(true)
 		_talk_left = min(duration, max(1.0, text.length() * 0.055))
 	_pt_timer = 0.0
@@ -874,6 +896,8 @@ func _on_brain_message(msg: Dictionary) -> void:
 		"stats":
 			_stats = msg
 		"music":
+			if bool(msg.get("playing", false)) != bool(music.get("playing", false)):
+				glitch_pulse(0.5, 0.3)
 			music = msg
 			character.set_music(bool(msg.get("playing", false)))
 		"attention":
