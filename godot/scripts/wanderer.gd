@@ -17,7 +17,7 @@ extends Node
 @export var seat_pad := -14.0
 ## Вероятность сесть на окно (если подходящее окно есть).
 @export var window_chance := 0.5
-@export var corner_poses: PackedStringArray = ["idle", "idle_sit", "idle_lying"]
+@export var corner_poses: PackedStringArray = ["idle", "idle_sit", "idle_sit_default", "idle_lying"]
 @export var window_pose := "idle_sit_on_Window"
 ## Запас над головой для облачка (пиксели).
 @export var head_room := 80.0
@@ -38,6 +38,10 @@ var _follow_target := Vector2.ZERO    # куда ему надо
 ## Если отпустить её так, что плита в стольких пикселях от верхнего края окна, — садится на него.
 @export var drop_tolerance := 45
 var _last_side := 1                   # -1 левый угол, 1 правый
+## Как часто проверять, не ушла ли она за край экрана (сек).
+@export var watch_interval := 4.0
+var _watch_timer := 2.0
+var _log_path := ""
 var _head_offset := 0.0               # где макушка в окне персонажа (пиксели)
 
 
@@ -87,6 +91,12 @@ func _process(delta: float) -> void:
 		return
 	if _follow_hwnd != 0:
 		_glide(delta)
+	# сторож: раз в несколько секунд проверяем, что она целиком на экране
+	_watch_timer -= delta
+	if _watch_timer <= 0.0:
+		_watch_timer = watch_interval
+		if _follow_hwnd == 0 and main.is_idle() and character.vanish <= 0.01:
+			keep_on_screen("сторож")
 	if not enabled or not main.is_idle():
 		return
 	_timer -= delta
@@ -126,6 +136,7 @@ func go_to_sleep() -> void:
 	await place_in_corner("sleep", _last_side)
 	await _fade(0.0)
 	busy = false
+	keep_on_screen("сон")
 
 
 func is_sleeping_pose() -> bool:
@@ -145,6 +156,9 @@ func wake_up() -> void:
 	await _fade(0.0)
 	busy = false
 	reset_timer()
+	keep_on_screen("пробуждение")
+	if _follow_hwnd == 0:
+		keep_on_screen("перемещение")
 
 
 func _fade(to: float) -> void:
@@ -164,7 +178,13 @@ func _apply_pose(pose: String) -> Dictionary:
 
 
 func _screen_rect() -> Rect2i:
-	return DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	# экран, на котором центр окна; если такого нет (монитор отключили) — главный
+	var center: Vector2i = DisplayServer.window_get_position() + main.window_size / 2
+	for i in DisplayServer.get_screen_count():
+		var r := DisplayServer.screen_get_usable_rect(i)
+		if r.has_point(center):
+			return r
+	return DisplayServer.screen_get_usable_rect(DisplayServer.get_primary_screen())
 
 
 ## Нижний угол экрана: левый или правый, поза — случайная из доступных.
@@ -190,6 +210,7 @@ func place_in_corner(pose := "", side := 0) -> void:
 		x = r.end.x - corner_margin - int(bbox.end.x)
 	var y := r.end.y - int(bbox.end.y + foot_pad)
 	DisplayServer.window_set_position(Vector2i(x, y))
+	_log("угол: поза %s, сторона %d, экран %s, окно (%d, %d), кости %s" % [character.current_pose, side, str(r), x, y, str(bbox)])
 
 
 # ---------- сидение на окне ----------
@@ -321,3 +342,68 @@ func _is_own_window(win: Rect2i) -> bool:
 	var d_pos := (own.position - win.position).abs()
 	var d_size := (own.size - win.size).abs()
 	return d_pos.x <= 8 and d_pos.y <= 8 and d_size.x <= 8 and d_size.y <= 8
+
+
+# ---------- не уходить за край экрана ----------
+
+## Где на экране реально нарисованы её пиксели (а не кости — волосы торчат дальше).
+## Пусто, если её сейчас не видно.
+func _drawn_rect() -> Rect2i:
+	await RenderingServer.frame_post_draw
+	var img := main.get_viewport().get_texture().get_image()
+	var used := img.get_used_rect()
+	if main.bubble.visible:
+		# облачко тоже нарисовано — берём кости персонажа с запасом
+		var m: Dictionary = character.pose_metrics(main.camera)
+		if m.is_empty():
+			return Rect2i()
+		var b: Rect2 = m["bbox"]
+		used = Rect2i(b.grow(40.0))
+	if used.size.x <= 0:
+		return Rect2i()
+	return Rect2i(used.position + DisplayServer.window_get_position(), used.size)
+
+
+## Если какая-то её часть за краем экрана — плавно сдвигаем окно обратно.
+func keep_on_screen(reason := "") -> void:
+	var drawn := await _drawn_rect()
+	if drawn.size.x <= 0:
+		return
+	var scr := _screen_rect()
+	var margin := 4
+	var dx := 0
+	var dy := 0
+	var slack := 3                         # дыхание анимации — не повод двигать окно
+	if drawn.position.x < scr.position.x - slack:
+		dx = scr.position.x + margin - drawn.position.x
+	elif drawn.end.x > scr.end.x + slack:
+		dx = scr.end.x - margin - drawn.end.x
+	if drawn.end.y > scr.end.y + 2 + slack:
+		dy = scr.end.y + 2 - drawn.end.y
+	elif drawn.position.y < scr.position.y - slack:
+		dy = scr.position.y - drawn.position.y
+	if dx == 0 and dy == 0:
+		return
+	var from := DisplayServer.window_get_position()
+	var to := from + Vector2i(dx, dy)
+	_log("%s: поза %s, нарисована %s, экран %s → сдвиг (%d, %d)" % [reason, character.current_pose, str(drawn), str(scr), dx, dy])
+	var tw := create_tween()
+	tw.tween_method(func(v: Vector2): DisplayServer.window_set_position(Vector2i(v.round())),
+		Vector2(from), Vector2(to), 0.25).set_trans(Tween.TRANS_SINE)
+
+
+## Журнал перемещений рядом с программой (veronika.log), чтобы разбирать такие случаи.
+func _log(text: String) -> void:
+	if _log_path == "":
+		_log_path = "user://veronika.log" if OS.has_feature("editor") \
+			else OS.get_executable_path().get_base_dir().path_join("veronika.log")
+	var f := FileAccess.open(_log_path, FileAccess.READ_WRITE if FileAccess.file_exists(_log_path) else FileAccess.WRITE)
+	if f == null:
+		return
+	if f.get_length() > 200_000:
+		f.close()
+		f = FileAccess.open(_log_path, FileAccess.WRITE)   # не даём журналу разрастись
+	f.seek_end()
+	f.store_line("%s  %s" % [Time.get_datetime_string_from_system(), text])
+	f.close()
+	print(text)

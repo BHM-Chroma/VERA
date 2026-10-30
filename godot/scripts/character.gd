@@ -47,13 +47,22 @@ var screen_side := 1:
 		_update_mirror()
 ## Позы, в которых ноги в Blender направлены влево: слева экрана их отражаем.
 const MIRROR_ON_LEFT := ["idle_sit"]
-## 0 — виден, 1 — рассыпался (эффект перемещения).
+## 0 — виден, 1 — исчез (эффект перемещения). Если есть экранный глитч (glitch_material) —
+## исчезает через него, иначе — старым пиксельным рассыпанием в шейдерах модели.
 var vanish := 0.0:
 	set(v):
 		vanish = v
-		for m in all_materials:
-			m.set_shader_parameter("vanish", v)
+		if glitch_material:
+			glitch_material.set_shader_parameter("vanish", v)
+		else:
+			for m in all_materials:
+				m.set_shader_parameter("vanish", v)
+var glitch_material: ShaderMaterial
 var face_material: ShaderMaterial
+## Голова следит за курсором, когда он рядом.
+var head_look: HeadLook
+## В каких позах она смотрит на курсор (лёжа и во сне — нет).
+const LOOK_POSES := ["idle", "idle_sit", "idle_sit_default", "idle_sit_on_window", "drag_sit"]
 
 var talking := false
 var _face_bone := -1
@@ -77,6 +86,9 @@ func _ready() -> void:
 		skeleton = skels[0]
 		_face_bone = _find_bone("cc_facecontr")
 		_outline_bones = _deform_bones()
+		head_look = HeadLook.new()
+		head_look.name = "HeadLook"
+		skeleton.add_child(head_look)
 	_hide_helper_meshes()
 	_setup_materials()
 	if anim:
@@ -244,6 +256,10 @@ func set_pose(pose: String, blend := 0.25) -> bool:
 	current_pose = found
 	_update_mirror()
 	return play(_pose_variant(found), blend)
+
+
+func can_look() -> bool:
+	return current_pose.to_lower() in LOOK_POSES
 
 
 func _update_mirror() -> void:

@@ -99,8 +99,8 @@ func _ready() -> void:
 	brain.connection_changed.connect(_on_brain_connection)
 	_start_brain_if_bundled()
 	_build_tray()
-	say("Привет! Я на месте.", 3.0)
-	_wave_hello()
+	_build_glitch()
+	_startup_peek()
 
 	var args := OS.get_cmdline_user_args()
 	for a in args:
@@ -108,11 +108,131 @@ func _ready() -> void:
 			_debug_screenshot(a.get_slice("=", 1))
 
 
-## При запуске машет рукой (idle_Wave_start), потом встаёт в idle.
-func _wave_hello() -> void:
-	await get_tree().create_timer(0.3).timeout
-	if character.current_pose == character.idle_animation and not _dragging:
-		character.play("wave", 0.2, wave_speed)
+## Глитч поверх всего окна (она, плита, ноты). Облачко — выше, его не ломаем.
+@export var glitch_style := 2          # «плохой сигнал»
+## Случайные короткие «помехи» раз в столько секунд (0 — выключить); под музыку — чаще.
+@export var ambient_glitch_min := 180.0
+@export var ambient_glitch_max := 360.0
+@export var music_glitch_min := 40.0
+@export var music_glitch_max := 90.0
+var _glitch_mat: ShaderMaterial
+var _glitch_pulse_tw: Tween
+var _ambient_timer := 90.0
+
+
+func _build_glitch() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "Glitch"
+	layer.layer = 2
+	var rect := ColorRect.new()
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_glitch_mat = ShaderMaterial.new()
+	_glitch_mat.shader = preload("res://shaders/glitch.gdshader")
+	_glitch_mat.set_shader_parameter("style", glitch_style)
+	rect.material = _glitch_mat
+	layer.add_child(rect)
+	add_child(layer)
+	character.glitch_material = _glitch_mat
+	character.vanish = character.vanish
+	_ambient_timer = randf_range(ambient_glitch_min, ambient_glitch_max)
+
+
+## Короткая вспышка помех: amount — сила, time — длительность.
+func glitch_pulse(amount := 0.6, time := 0.35) -> void:
+	if _glitch_mat == null:
+		return
+	if _glitch_pulse_tw:
+		_glitch_pulse_tw.kill()
+	_glitch_mat.set_shader_parameter("amount", amount)
+	_glitch_pulse_tw = create_tween()
+	_glitch_pulse_tw.tween_method(func(v: float): _glitch_mat.set_shader_parameter("amount", v),
+		amount, 0.0, time).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+
+
+func _update_ambient_glitch(delta: float) -> void:
+	if ambient_glitch_min <= 0.0 or not _shown or _sleeping or wanderer.busy:
+		return
+	var playing := bool(music.get("playing", false))
+	_ambient_timer -= delta
+	if playing and _ambient_timer > music_glitch_max:
+		_ambient_timer = randf_range(music_glitch_min, music_glitch_max)   # музыка включилась — чаще
+	if _ambient_timer <= 0.0:
+		_ambient_timer = randf_range(music_glitch_min, music_glitch_max) if playing \
+			else randf_range(ambient_glitch_min, ambient_glitch_max)
+		glitch_pulse(randf_range(0.35, 0.7), randf_range(0.15, 0.4))
+
+
+## При запуске выглядывает из-за края экрана (idle_screen_start_anim), потом с глитчем
+## появляется на своём месте. Если такой анимации нет — машет, как раньше.
+@export var peek_anim := "idle_screen_start_anim"
+## Сколько секунд анимации играть (дальше в Blender она уже стоит на месте).
+@export var peek_length := 3.5
+## Насколько далеко она высовывается из-за края (пиксели).
+@export var peek_depth := 190.0
+
+
+func _startup_peek() -> void:
+	if not character.has_animation(peek_anim):
+		say("Привет! Я на месте.", 3.0)
+		await get_tree().create_timer(0.3).timeout
+		if character.current_pose == character.idle_animation and not _dragging:
+			character.play("wave", 0.2, wave_speed)
+		return
+	wanderer.busy = true
+	character.vanish = 1.0
+	await get_tree().create_timer(0.25).timeout   # дождаться, пока окно встанет на своё место
+	var final_pos := DisplayServer.window_get_position()
+	var scr := wanderer._screen_rect()
+	var side := -1 if final_pos.x + window_size.x / 2 < scr.get_center().x else 1
+
+	# считаем, где она в анимации, пока её не видно
+	character.vanish = 1.0
+	character.position = Vector3.ZERO
+	character.scale.x = 1.0 if side < 0 else -1.0       # в Blender выглядывает слева
+	character.play(peek_anim, 0.0)
+	character.anim.seek(2.0, true)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var m := character.pose_metrics(camera)
+	var bbox: Rect2 = m["bbox"]
+	var head: Vector2 = m["head"]
+	var px := float(window_size.y) / camera.size
+	# внутри окна: высовывается на peek_depth из-за своего края окна, по высоте — целиком в окне
+	var dx := (peek_depth - bbox.end.x) if side < 0 else (window_size.x - peek_depth - bbox.position.x)
+	var dy := 70.0 - bbox.position.y
+	character.position = Vector3(dx / px, -dy / px, 0.0)
+	head += Vector2(dx, dy)
+	# окно — вплотную к краю экрана, голова — чуть выше середины экрана
+	var wx := scr.position.x if side < 0 else scr.end.x - window_size.x
+	var wy := clampi(int(scr.position.y + scr.size.y * 0.42 - head.y), scr.position.y - 60, scr.end.y - window_size.y)
+	DisplayServer.window_set_position(Vector2i(wx, wy))
+
+	character.anim.seek(0.0, true)
+	character.play(peek_anim, 0.0)
+	var tw := create_tween()
+	tw.tween_property(character, "vanish", 0.0, 0.25)
+	await get_tree().create_timer(0.35).timeout
+	glitch_pulse(0.5, 0.3)
+	await get_tree().create_timer(peek_length - 0.35).timeout
+
+	# глитч — и она на своём месте
+	glitch_pulse(0.9, 0.5)
+	tw = create_tween()
+	tw.tween_property(character, "vanish", 1.0, 0.35)
+	await tw.finished
+	character.position = Vector3.ZERO
+	character.screen_side = side
+	character.set_pose(character.idle_animation, 0.0)
+	DisplayServer.window_set_position(final_pos)
+	await get_tree().process_frame
+	tw = create_tween()
+	tw.tween_property(character, "vanish", 0.0, 0.35)
+	glitch_pulse(0.7, 0.45)
+	await tw.finished
+	wanderer.busy = false
+	say("Привет! Я на месте.", 3.0)
+	wanderer.keep_on_screen("запуск")
 
 
 # ---------- запуск мозга ----------
@@ -176,6 +296,10 @@ func _process(delta: float) -> void:
 	if _carry:
 		_update_carry(delta)
 	_update_boredom(delta)
+	_update_ambient_glitch(delta)
+	if character.head_look:
+		character.head_look.allowed = _shown and not _sleeping and character.vanish <= 0.01 \
+			and character.can_look()
 	# ноты — пока играет музыка и она видна (не рассыпается, не спит)
 	var want_notes := bool(music.get("playing", false)) and not _sleeping \
 		and not wanderer.busy and character.vanish <= 0.01
@@ -295,6 +419,7 @@ func _begin_carry() -> void:
 	platform.global_position = camera.project_position(top, camera.global_position.z) \
 		+ Vector3(0.0, -platform.thickness * 0.5, 0.0)
 	platform.appear()
+	glitch_pulse(0.45, 0.3)
 	# поднимаем её так, чтобы плита была на уровне carry_seat_y (а не у нижнего края окна)
 	var dy := top.y - carry_seat_y
 	if absf(dy) > 2.0:
@@ -312,6 +437,7 @@ func _end_carry() -> void:
 	_carry = false
 	_carry_ready = false
 	platform.disappear()
+	glitch_pulse(0.45, 0.3)
 	wanderer.on_user_moved()
 	# отпустили плиту у верхнего края окна — садится на него
 	if was_ready:
@@ -383,7 +509,8 @@ func _update_boredom(delta: float) -> void:
 	if _idle_time >= bored_sit_after and character.current_pose == character.idle_animation \
 			and String(character.anim.current_animation) in [character.idle_animation, character.idle_animation + "_music"]:
 		character.screen_side = _screen_side()
-		character.set_pose("idle_sit", 0.8)
+		# садится «прямо» (idle_sit_default), а если такой позы нет — как раньше
+		character.set_pose("idle_sit_default" if character.has_animation("idle_sit_default") else "idle_sit", 0.8)
 
 
 ## С какой стороны экрана она сейчас: -1 — левая половина, 1 — правая.

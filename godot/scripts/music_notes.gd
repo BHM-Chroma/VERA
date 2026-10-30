@@ -7,6 +7,7 @@ const TEXTURES := [
 	preload("res://assets/fx/note2.png"),
 	preload("res://assets/fx/note3.png"),
 ]
+const NOTE_SHADER := preload("res://shaders/note.gdshader")
 const COLORS := [
 	Color(1.0, 0.35, 0.62),   # розовый
 	Color(0.68, 0.45, 1.0),   # фиолетовый
@@ -61,14 +62,14 @@ func _spawn() -> void:
 
 	var s := Sprite3D.new()
 	s.texture = TEXTURES.pick_random()
-	s.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	s.shaded = false
-	s.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
 	s.pixel_size = randf_range(2.0, 2.6) / px             # 1 пиксель картинки ≈ 2–2.6 пикселя экрана
-	s.modulate = COLORS.pick_random()
 	s.flip_h = randf() < 0.3
-	s.no_depth_test = true
-	s.render_priority = 10
+	var mat := ShaderMaterial.new()                       # нота с глитчем, как у неё
+	mat.shader = NOTE_SHADER
+	mat.set_shader_parameter("tex", s.texture)
+	s.material_override = mat
+	s.set_instance_shader_parameter("tint", COLORS.pick_random())
+	s.set_instance_shader_parameter("glitch", 1.0)
 	add_child(s)
 	var p0 := cam.project_position(start, cam.global_position.z)
 	s.global_position = p0
@@ -90,7 +91,9 @@ func _spawn() -> void:
 		pos.y = snappedf(pos.y, 1.0 / px)
 		s.global_position = pos
 		s.rotation.z = sin(phase + t * 5.0) * 0.25
-		s.modulate.a = 1.0 - smoothstep(0.65, 1.0, t)
+		# появляется и исчезает глитчем
+		var g := 1.0 - smoothstep(0.0, 0.12, t) + smoothstep(0.7, 1.0, t)
+		s.set_instance_shader_parameter("glitch", clampf(g, 0.0, 1.0))
 	, 0.0, 1.0, life)
 	tw.chain().tween_callback(s.queue_free)
 
