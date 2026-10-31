@@ -19,12 +19,15 @@ FILE = path("user_commands.json")
 TEACH_RE = re.compile(
     r"запомни(?:ть)?\s+(?:новую\s+|мою\s+)?(?:команду|фразу)\s+(?P<trig>.+?)"
     r"(?:\s*[,.;]?\s*(?:а\s+)?(?:её|ее|eё|ей|и)?\s*(?:действи\w*|делай|выполняй|означает|значит)\s*[:—–=-]?\s*"
-    r"|\s*(?:—|–|->|=>|=|:)\s*)"
-    r"(?P<act>.+)$")
-TEACH_ONLY_RE = re.compile(r"запомни(?:ть)?\s+(?:новую\s+|мою\s+)?(?:команду|фразу)\s*(?P<trig>.*)$")
-FORGET_RE = re.compile(r"(?:забудь|удали|сотри)\s+(?:мою\s+)?(?:команду|фразу)\s+(?P<trig>.+)$")
+    r"|\s*(?:—|–|->|=>|=|:)\s*"
+    r"|\s+(?=⟦U))"                      # «запомни команду ютуб https://…» — ссылка сразу после названия
+    r"(?P<act>.+)$", re.IGNORECASE)
+TEACH_ONLY_RE = re.compile(r"запомни(?:ть)?\s+(?:новую\s+|мою\s+)?(?:команду|фразу)\s*(?P<trig>.*)$", re.IGNORECASE)
+FORGET_RE = re.compile(r"(?:забудь|удали|сотри)\s+(?:мою\s+)?(?:команду|фразу)\s+(?P<trig>.+)$", re.IGNORECASE)
 SPLIT_RE = re.compile(r"\s*(?:,|;|\s+а\s+потом\s+|\s+и\s+потом\s+|\s+и\s+затем\s+|\s+потом\s+|\s+затем\s+|\s+и\s+)\s*")
-URL_RE = re.compile(r"(https?://\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|ru|kz|net|org|io|tv|me|app|gg|dev)\b\S*)")
+URL_RE = re.compile(r"(https?://\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|ru|kz|net|org|io|tv|me|app|gg|dev|be)\b\S*)",
+                    re.IGNORECASE)
+MARK_RE = re.compile(r"⟦U(\d+)⟧")
 SAY_RE = re.compile(r"^(?:скажи|ответь|говори|произнеси)\s+(?P<text>.+)$")
 QUOTES = "«»\"'“”„"
 
@@ -33,15 +36,31 @@ def strip_quotes(s):
     return s.strip().strip(QUOTES + " ,.").strip()
 
 
-def split_action(action):
-    """«открой телеграм и спотифай, потом спрячься» -> ['открой телеграм', 'спотифай', 'спрячься']."""
+def protect(text):
+    """Прячет ссылки за метками ⟦U0⟧, чтобы их «:», «=», запятые и регистр букв ничего не сломали."""
+    urls = []
+
+    def keep(m):
+        url = m.group(1).rstrip(".,;)»\"'")
+        urls.append(url)
+        return f"⟦U{len(urls) - 1}⟧" + m.group(1)[len(url):]
+    return URL_RE.sub(keep, text), urls
+
+
+def restore(text, urls):
+    return MARK_RE.sub(lambda m: urls[int(m.group(1))], text)
+
+
+def split_action(action, urls=()):
+    """«открой телеграм и спотифай, потом спрячься» -> ['открой телеграм', 'спотифай', 'спрячься'].
+    Слова переводятся в строчные, ссылки (urls для меток ⟦U0⟧) остаются как были."""
     parts = []
     for p in SPLIT_RE.split(action):
-        words = strip_quotes(p).split()
+        words = strip_quotes(p).lower().split()
         while words and words[0] in ("и", "а", "потом", "затем", "ещё", "еще", "после"):
             words.pop(0)
         if words:
-            parts.append(" ".join(words))
+            parts.append(restore(" ".join(words).replace("⟦u", "⟦U"), urls))
     return parts
 
 
@@ -49,8 +68,8 @@ def url_of(part):
     m = URL_RE.search(part)
     if not m:
         return None
-    url = m.group(1)
-    return url if url.startswith("http") else "https://" + url
+    url = m.group(1).rstrip(".,;)»\"'")
+    return url if url.lower().startswith("http") else "https://" + url
 
 
 def say_text(part):

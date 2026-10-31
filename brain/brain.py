@@ -232,6 +232,7 @@ class Brain:
         return " ".join(dedup).strip()
 
     async def process(self, text, source):
+        original = text.strip()          # с заглавными буквами — для ссылок в своих командах
         text = text.lower().strip()
         now = time.time()
         has_alias = any(a in text for a in self.aliases) or any(self._is_alias(w) for w in text.split())
@@ -291,7 +292,8 @@ class Brain:
 
         # свои команды («запомни команду …») и напоминания («напомни через …», «таймер на …»)
         raw = " ".join(w for w in text.split() if not self._is_alias(w))
-        if await self._user_command_flow(raw, cmd, now):
+        raw_orig = " ".join(w for w in original.split() if not self._is_alias(w.lower()))
+        if await self._user_command_flow(raw_orig, cmd, now):
             return
         if await self._reminder_flow(raw, cmd, now):
             return
@@ -343,6 +345,7 @@ class Brain:
             or self.commands.recognize(c)[1] >= COMMAND_THRESHOLD or reminders.is_request(c)
 
     async def _user_command_flow(self, raw, cmd, now):
+        """raw — фраза как написана (регистр сохранён: он важен для ссылок)."""
         if self.pending_teach:
             trig, deadline = self.pending_teach
             self.pending_teach = None
@@ -352,9 +355,10 @@ class Brain:
                 else:
                     await self._teach(trig, raw)
                 return True
-        m = usercmds.TEACH_RE.search(raw)
+        marked, urls = usercmds.protect(raw)
+        m = usercmds.TEACH_RE.search(marked)
         if m:
-            await self._teach(m.group("trig"), m.group("act"))
+            await self._teach(usercmds.restore(m.group("trig"), urls), m.group("act"), urls)
             return True
         m = usercmds.TEACH_ONLY_RE.search(raw)
         if m:
@@ -377,10 +381,12 @@ class Brain:
             return True
         return False
 
-    async def _teach(self, trig, action):
+    async def _teach(self, trig, action, urls=None):
+        if urls is None:
+            action, urls = usercmds.protect(action)
         trigger = self._clean(usercmds.strip_quotes(trig))
         steps, verb = [], None
-        for st in usercmds.split_action(action.lower()):
+        for st in usercmds.split_action(action, urls):
             first = st.split()[0]
             if first.startswith(LAUNCH_STEMS + CLOSE_STEMS):
                 verb = first
@@ -416,7 +422,8 @@ class Brain:
                     await self.say(text[0].upper() + text[1:])
                 elif url:
                     await asyncio.to_thread(webbrowser.open, url)
-                    await self.say(f"Открываю {url.split('//', 1)[-1].split('/')[0]}.")
+                    host = url.split("//", 1)[-1].split("/")[0].lower()
+                    await self.say(f"Открываю {host[4:] if host.startswith('www.') else host}.")
                 else:
                     await self.process(st, source="macro")
         finally:
