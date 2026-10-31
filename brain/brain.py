@@ -186,6 +186,30 @@ class Brain:
                 print(f"[окна] сесть на: {info['process']} «{info['title'][:40]}» "
                       f"{info['x']},{info['y']} {info['w']}x{info['h']}" if info else "[окна] подходящего окна нет")
             await self.broadcast({"type": "window_info", "reply_to": msg.get("id"), "window": info})
+        elif kind == "voice_settings":
+            # «Не слушать» и чувствительность — из меню персонажа
+            lst = getattr(self, "listener", None)
+            muted = bool(msg.get("muted", False))
+            if lst is not None:
+                if "sensitivity" in msg:
+                    await asyncio.to_thread(lst.set_sensitivity, int(msg["sensitivity"]))
+                if muted != lst.state["muted"]:
+                    await asyncio.to_thread(lst.set_muted, muted)
+            else:
+                import voice
+                st = voice.load_state()
+                st["muted"] = muted
+                st["sensitivity"] = int(msg.get("sensitivity", st["sensitivity"]))
+                voice.save_state(st)
+        elif kind == "voice_calibrate":
+            lst = getattr(self, "listener", None)
+            if lst is None or not lst.ready:
+                await self.say("Микрофон сейчас не работает — нечего подстраивать.")
+            else:
+                await self.say("Тише секунду — слушаю шум в комнате…")
+                await asyncio.sleep(0.8)
+                await asyncio.to_thread(lst.calibrate)
+                await self.say("Готово, подстроилась под шум.")
         elif kind == "poke":
             self.last_interaction = time.time()
             if self.sleep_mode:
@@ -701,12 +725,39 @@ class Brain:
             print("[мозг] голос выключен в config.json")
             return None
 
-        def on_text(t):
-            asyncio.run_coroutine_threadsafe(self.process(t, source="voice"), self.loop)
+        def on_text(variants):
+            text = self._pick_transcript(variants)
+            if len(variants) > 1:
+                print(f"[голос] варианты: {variants} -> «{text}»")
+            asyncio.run_coroutine_threadsafe(self.process(text, source="voice"), self.loop)
 
         listener = VoiceListener(self.cfg, on_text, on_status=lambda s: print(f"[голос] {s}"))
+        self.listener = listener
         listener.start()
         return listener
+
+    def _pick_transcript(self, variants):
+        """Из нескольких вариантов услышанного выбираем тот, что больше похож на обращение к ней
+        или на известную команду. Первый вариант (самый вероятный у Google) чуть в приоритете."""
+        if isinstance(variants, str):
+            return variants
+        best, best_score = variants[0], -1.0
+        for i, v in enumerate(variants[:5]):
+            words = v.split()
+            score = 0.0
+            if any(self._is_alias(w) for w in words):
+                score += 60
+            cmd = self._clean(v)
+            if cmd:
+                score += self.commands.recognize(cmd)[1] * 0.4
+                if self.usercmds.find(cmd):
+                    score += 50
+                if cmd.split()[0].startswith(LAUNCH_STEMS + CLOSE_STEMS) or reminders.is_request(cmd):
+                    score += 25
+            score += 8 - 2 * i
+            if score > best_score:
+                best, best_score = v, score
+        return best
 
     async def run(self):
         self.loop = asyncio.get_running_loop()
@@ -731,7 +782,7 @@ class Brain:
             apps_task.cancel()
             rem_task.cancel()
             if listener:
-                listener.stop()
+                listener.stop(wait=False)
 
 
 def text_words(text):

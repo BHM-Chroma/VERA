@@ -54,9 +54,19 @@ var _carry_grab := Vector2.ZERO       # точка в окне, которая �
 var _carry_ready := false             # плита уже стоит под ней
 var _carry_top := Vector2.ZERO        # верх плиты в окне (пиксели)
 
-enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART, AUTOHIDE }
+enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART, AUTOHIDE,
+	MUTE, SENS_LOW, SENS_NORMAL, SENS_HIGH, CALIBRATE }
 
 const TRAY_ICON := preload("res://assets/fx/tray.png")
+const TRAY_ICON_MUTED := preload("res://assets/fx/tray_muted.png")
+const MIC_OFF_ICON := preload("res://assets/fx/mic_off.png")
+
+## Микрофон: «не слушать» и чувствительность (0 — низкая, 1 — обычная, 2 — высокая).
+var mic_muted := false
+var mic_sensitivity := 1
+var _mic_menu: PopupMenu
+var _mic_icon: TextureRect
+var _mic_icon_timer := 0.0
 const RUN_KEY := "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 
 ## Работа в фоне: спрятана по просьбе (значок у часов) / сама спряталась (полноэкранная игра, видео).
@@ -87,6 +97,8 @@ func _ready() -> void:
 	add_child(wanderer)
 	wanderer.set_enabled(bool(_settings.get_value("wander", "enabled", true)))
 	auto_hide = bool(_settings.get_value("background", "auto_hide", true))
+	mic_muted = bool(_settings.get_value("voice", "muted", false))
+	mic_sensitivity = clampi(int(_settings.get_value("voice", "sensitivity", 1)), 0, 2)
 	platform = Platform.new()
 	platform.name = "Platform"
 	add_child(platform)
@@ -100,6 +112,7 @@ func _ready() -> void:
 	brain.connection_changed.connect(_on_brain_connection)
 	_start_brain_if_bundled()
 	_build_tray()
+	_build_mic_icon()
 	_build_glitch()
 	_startup_peek()
 
@@ -359,6 +372,7 @@ func _process(delta: float) -> void:
 
 	if bubble.visible:
 		_place_bubble()
+	_update_mic_icon(delta)
 
 
 ## Облачко держится над головой, в какой бы позе она ни была.
@@ -597,6 +611,16 @@ func _build_menu() -> void:
 	_menu.add_item("Написать сообщение", MenuId.CHAT)
 	_menu.add_item("Состояние ПК", MenuId.STATS)
 	_menu.add_separator()
+	_menu.add_check_item("Не слушать (микрофон выключен)", MenuId.MUTE)
+	_mic_menu = PopupMenu.new()
+	_mic_menu.add_radio_check_item("Чувствительность: низкая (шумно вокруг)", MenuId.SENS_LOW)
+	_mic_menu.add_radio_check_item("Чувствительность: обычная", MenuId.SENS_NORMAL)
+	_mic_menu.add_radio_check_item("Чувствительность: высокая (тихо говорю)", MenuId.SENS_HIGH)
+	_mic_menu.add_separator()
+	_mic_menu.add_item("Подстроиться под шум в комнате", MenuId.CALIBRATE)
+	_mic_menu.id_pressed.connect(_on_menu)
+	_menu.add_submenu_node_item("Микрофон", _mic_menu)
+	_menu.add_separator()
 	_menu.add_check_item("Поверх всех окон", MenuId.ON_TOP)
 	_menu.add_check_item("Гулять по экрану", MenuId.WANDER)
 	_menu.add_item("Переместиться сейчас", MenuId.WANDER_NOW)
@@ -634,6 +658,15 @@ func _on_menu(id: int) -> void:
 			_set_autostart(not _autostart_enabled())
 		MenuId.AUTOHIDE:
 			set_auto_hide(not auto_hide)
+		MenuId.MUTE:
+			set_mic_muted(not mic_muted)
+		MenuId.SENS_LOW, MenuId.SENS_NORMAL, MenuId.SENS_HIGH:
+			set_mic_sensitivity({MenuId.SENS_LOW: 0, MenuId.SENS_NORMAL: 1, MenuId.SENS_HIGH: 2}[id])
+		MenuId.CALIBRATE:
+			if brain.connected:
+				brain.send({"type": "voice_calibrate"})
+			else:
+				say("Мозг не подключён — микрофон не работает.", 3.0)
 		MenuId.QUIT:
 			_quit()
 
@@ -724,6 +757,10 @@ func _open_menu(at: Vector2i) -> void:
 	_menu.set_item_checked(_menu.get_item_index(MenuId.WANDER), wanderer.enabled)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOSTART), _autostart_enabled())
 	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOHIDE), auto_hide)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.MUTE), mic_muted)
+	for i in 3:
+		var mid: int = [MenuId.SENS_LOW, MenuId.SENS_NORMAL, MenuId.SENS_HIGH][i]
+		_mic_menu.set_item_checked(_mic_menu.get_item_index(mid), mic_sensitivity == i)
 	_menu.position = at
 	_menu.popup()
 
@@ -888,7 +925,82 @@ func say(text: String, duration := -1.0, urgent := false) -> void:
 
 func _on_brain_connection(online: bool) -> void:
 	if online:
-		say("Мозг подключён. Слушаю!", 2.5)
+		_send_voice_settings()
+		say("Мозг подключён. Пиши мне — микрофон выключен." if mic_muted else "Мозг подключён. Слушаю!", 2.5)
+
+
+# ---------- микрофон ----------
+
+func _send_voice_settings() -> void:
+	if brain.connected:
+		brain.send({"type": "voice_settings", "muted": mic_muted, "sensitivity": mic_sensitivity})
+
+
+## «Не слушать»: мозг полностью отпускает микрофон. Запоминается между запусками.
+func set_mic_muted(value: bool) -> void:
+	mic_muted = value
+	_settings.set_value("voice", "muted", value)
+	_settings.save(SETTINGS_PATH)
+	_send_voice_settings()
+	_update_tray_icon()
+	_mic_icon_timer = 0.0
+	glitch_pulse(0.35, 0.15)
+	say("Не слушаю. Пиши мне в чат, если что." if value else "Снова слушаю!", 2.5)
+
+
+func set_mic_sensitivity(level: int) -> void:
+	mic_sensitivity = clampi(level, 0, 2)
+	_settings.set_value("voice", "sensitivity", mic_sensitivity)
+	_settings.save(SETTINGS_PATH)
+	_send_voice_settings()
+	say(["Буду слушать только громкую речь.", "Обычная чувствительность.", "Буду слышать даже тихий голос."][mic_sensitivity], 2.5)
+
+
+func _update_tray_icon() -> void:
+	if _tray == null:
+		return
+	_tray.icon = TRAY_ICON_MUTED if mic_muted else TRAY_ICON
+	_tray.tooltip = "VERONIKA%s — левый клик: спрятать/показать, правый: меню" % (" (не слушает)" if mic_muted else "")
+
+
+## Маленький перечёркнутый микрофон у её головы, пока «не слушать» включено.
+func _build_mic_icon() -> void:
+	_mic_icon = TextureRect.new()
+	_mic_icon.texture = MIC_OFF_ICON
+	_mic_icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_mic_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_mic_icon.stretch_mode = TextureRect.STRETCH_SCALE
+	_mic_icon.custom_minimum_size = Vector2(40, 40)
+	_mic_icon.size = Vector2(40, 40)
+	_mic_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_mic_icon.modulate.a = 0.9
+	_mic_icon.visible = false
+	bubble.get_parent().add_child(_mic_icon)
+	_update_tray_icon()
+
+
+func _update_mic_icon(delta: float) -> void:
+	if _mic_icon == null:
+		return
+	var want := mic_muted and _shown and character.vanish <= 0.01 and not _sleeping
+	if not want:
+		_mic_icon.visible = false
+		return
+	_mic_icon_timer -= delta
+	if _mic_icon_timer > 0.0 and _mic_icon.visible:
+		return
+	_mic_icon_timer = 0.2
+	var m := character.pose_metrics(camera)
+	if m.is_empty():
+		return
+	var head: Vector2 = m["head"]
+	var bbox: Rect2 = m["bbox"]
+	# справа от головы, чуть выше; если не помещается в окно — слева
+	var pos := Vector2(head.x + 78.0, max(bbox.position.y - 4.0, head.y - 70.0))
+	if pos.x + _mic_icon.size.x > window_size.x - 2:
+		pos.x = head.x - 78.0 - _mic_icon.size.x
+	_mic_icon.position = pos
+	_mic_icon.visible = true
 
 
 func _on_brain_message(msg: Dictionary) -> void:

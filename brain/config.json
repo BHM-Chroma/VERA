@@ -15,8 +15,10 @@
         "mode": "online",
         "vosk_model_path": "models/vosk-model-small-ru-0.22",
         "require_wake_word": true,
-        "conversation_window_sec": 10,
-        "phrase_time_limit": 6
+        "conversation_window_sec": 12,
+        "phrase_time_limit": 10,
+        "pause_sec": 0.6,
+        "device_name": ""
     },
     "monitor": {
         "interval_sec": 2,
