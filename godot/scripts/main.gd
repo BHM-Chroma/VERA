@@ -63,6 +63,7 @@ const RUN_KEY := "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 var _user_hidden := false
 var _auto_hidden := false
 var _peeking := false
+var _urgent_peek := false   # напоминание: показываемся даже поверх полноэкранной игры
 var _shown := true
 ## Прятаться самой, пока открыта полноэкранная игра/видео (можно выключить в меню).
 var auto_hide := true
@@ -776,7 +777,7 @@ func set_user_hidden(value: bool) -> void:
 ## Спрятать/показать. Главное окно Godot скрыть нельзя, поэтому «спрятана» — это:
 ## персонаж и облачко невидимы, окно пропускает все клики насквозь, кадров почти нет.
 func _apply_visibility() -> void:
-	var hide_now := (_user_hidden and not _peeking) or _auto_hidden
+	var hide_now := (_user_hidden and not _peeking) or (_auto_hidden and not (_peeking and _urgent_peek))
 	if hide_now == (not _shown):
 		return
 	_shown = not hide_now
@@ -794,18 +795,23 @@ func _apply_visibility() -> void:
 
 
 ## Спрятана, но надо что-то сказать: появляется на время облачка.
-func _peek(duration: float) -> void:
+func _peek(duration: float, urgent := false) -> void:
 	if _peeking:
+		if urgent and not _urgent_peek:
+			_urgent_peek = true
+			_apply_visibility()
 		return
 	_peeking = true
+	_urgent_peek = urgent
 	_apply_visibility()
 	await _vanish_in()
 	await get_tree().create_timer(duration + 0.6).timeout
 	while bubble.visible or character.talking:
 		await get_tree().create_timer(0.3).timeout
-	if _peeking and _user_hidden:
+	if _peeking and (_user_hidden or _auto_hidden):
 		await _vanish_out()
 	_peeking = false
+	_urgent_peek = false
 	_apply_visibility()
 
 
@@ -850,12 +856,15 @@ func _set_autostart(enable: bool) -> void:
 
 # ---------- мозг ----------
 
-func say(text: String, duration := -1.0) -> void:
+func say(text: String, duration := -1.0, urgent := false) -> void:
 	if duration < 0.0:
 		duration = clamp(text.length() * 0.07, 2.5, 15.0)
-	if not _shown:
-		if _user_hidden and not _auto_hidden and text != "…":
-			_peek(duration)   # спрятана — «выглядывает», чтобы сказать, и снова прячется
+	if urgent:
+		glitch_pulse(0.6, 0.35)
+		attention()
+	if not _shown or (_peeking and urgent):
+		if urgent or (_user_hidden and not _auto_hidden and text != "…"):
+			_peek(duration, urgent)   # спрятана — «выглядывает», чтобы сказать, и снова прячется
 		else:
 			return            # идёт полноэкранная игра/видео — не мешаем облачками
 	bubble.say(text, duration)
@@ -875,7 +884,7 @@ func _on_brain_connection(online: bool) -> void:
 func _on_brain_message(msg: Dictionary) -> void:
 	match String(msg.get("type", "")):
 		"say":
-			say(String(msg.get("text", "")), float(msg.get("duration", -1.0)))
+			say(String(msg.get("text", "")), float(msg.get("duration", -1.0)), bool(msg.get("urgent", false)))
 			if msg.has("anim") and character.current_pose == character.idle_animation:
 				character.play(String(msg.anim))
 		"anim":

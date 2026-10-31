@@ -291,6 +291,17 @@ class Commands:
             n = len(self.brain.apps.entries)
             return f"Я знаю {n} программ и игр." if n else "Список программ ещё собирается."
 
+        def my_cmds(_):
+            items = self.brain.usercmds.items
+            if not items:
+                return "Своих команд пока нет. Скажи: «Запомни команду …, её действие …»."
+            listing = "; ".join(f"«{c['trigger']}» — {', '.join(c['steps'])}" for c in items[:6])
+            return f"Помню: {listing}." + (f" И ещё {len(items) - 6}." if len(items) > 6 else "")
+
+        def forget_all(_):
+            n = self.brain.usercmds.clear()
+            return f"Забыла все свои команды ({n})." if n else "Своих команд и так нет."
+
         def quit_brain(_):
             self.brain.request_quit()
             return "Хорошо, завершаю работу. До следующего запуска!"
@@ -331,6 +342,10 @@ class Commands:
         self.add("apps_refresh", ("обнови список программ", "обнови программы", "найди новые программы",
                                   "пересканируй программы"), apps_refresh)
         self.add("apps_count", ("сколько программ ты знаешь", "сколько у меня программ"), apps_count)
+        self.add("my_commands", ("какие команды ты помнишь", "мои команды", "список моих команд",
+                                 "какие у меня команды", "какие команды ты знаешь"), my_cmds)
+        self.add("forget_all_commands", ("забудь все команды", "удали все команды", "забудь все мои команды"),
+                 forget_all, danger=True, title="Забыть все твои команды")
         self.add("shutdown", ("отбой", "выключись", "завершай работу"), quit_brain, danger=True,
                  title="Закрыть меня (VERONIKA)")
 

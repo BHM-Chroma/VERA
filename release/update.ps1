@@ -35,7 +35,7 @@ Start-Sleep -Milliseconds 800
 
 # копируем всё, кроме личных файлов и самого обновлятора
 robocopy $src $Dir /E /NFL /NDL /NJH /NJS /NP `
-    /XF .env config.local.json memory.json auto_program_paths.json brain.log 'Обновить.bat' `
+    /XF .env config.local.json memory.json auto_program_paths.json user_commands.json reminders.json brain.log 'Обновить.bat' `
     /XD models | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "Ошибка копирования (robocopy $LASTEXITCODE)" }
 

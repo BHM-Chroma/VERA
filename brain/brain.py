@@ -12,6 +12,7 @@ import os
 import random
 import sys
 import time
+import webbrowser
 
 import websockets
 from rapidfuzz import fuzz
@@ -23,6 +24,8 @@ from monitor import Monitor
 from voice import VoiceListener
 import windows_info
 import music
+import reminders
+import usercmds
 
 from paths import BASE_DIR
 
@@ -102,6 +105,11 @@ class Brain:
         self._follow_last = None
         self.music_state = {"playing": False}
         self._last_music_comment = 0.0
+        self.usercmds = usercmds.UserCommands()
+        self.reminders = reminders.Reminders()
+        self.pending_teach = None      # (команда, срок) — спросила «что делать по команде …?»
+        self.pending_remind = None     # (фраза, срок) — спросила «когда напомнить?»
+        self.macro_depth = 0           # своя команда вызывает другие — защита от зацикливания
 
     # ---------- связь с персонажем ----------
 
@@ -113,9 +121,9 @@ class Brain:
             except websockets.ConnectionClosed:
                 self.clients.discard(ws)
 
-    async def say(self, text, anim=None):
+    async def say(self, text, anim=None, **extra):
         print(f"[{self.cfg['name']}]: {text}")
-        msg = {"type": "say", "text": text}
+        msg = {"type": "say", "text": text, **extra}
         if anim:
             msg["anim"] = anim
         await self.broadcast(msg)
@@ -179,6 +187,7 @@ class Brain:
                       f"{info['x']},{info['y']} {info['w']}x{info['h']}" if info else "[окна] подходящего окна нет")
             await self.broadcast({"type": "window_info", "reply_to": msg.get("id"), "window": info})
         elif kind == "poke":
+            self.last_interaction = time.time()
             if self.sleep_mode:
                 await self.say("Мм… я сплю. Позови меня по имени.")
             else:
@@ -234,7 +243,8 @@ class Brain:
                     await self.say("Я снова здесь.")
                     self.last_interaction = now
                 return
-            in_dialog = now - self.last_interaction < self.cfg["voice"]["conversation_window_sec"]
+            in_dialog = now - self.last_interaction < self.cfg["voice"]["conversation_window_sec"] \
+                or any(p and now < p[1] for p in (self.pending_teach, self.pending_remind))
             if self.cfg["voice"]["require_wake_word"] and not has_alias and not in_dialog:
                 return
             print(f"[Ты, голосом]: {text}")
@@ -279,6 +289,13 @@ class Brain:
                     await self.say("Хорошо, ничего не делаю.")
                     return
 
+        # свои команды («запомни команду …») и напоминания («напомни через …», «таймер на …»)
+        raw = " ".join(w for w in text.split() if not self._is_alias(w))
+        if await self._user_command_flow(raw, cmd, now):
+            return
+        if await self._reminder_flow(raw, cmd, now):
+            return
+
         if not cmd:
             await self.say("Да? Я слушаю.")
             return
@@ -313,6 +330,201 @@ class Brain:
         answer = await asyncio.to_thread(self.llm.ask, cmd, ctx)
         await self.say(answer)
         self.last_interaction = time.time()
+
+    # ---------- свои команды ----------
+
+    def _known_step(self, step):
+        if usercmds.url_of(step) or usercmds.say_text(step):
+            return True
+        c = self._clean(step)
+        if not c:
+            return False
+        return c.split()[0].startswith(LAUNCH_STEMS + CLOSE_STEMS) or self.usercmds.find(c) is not None \
+            or self.commands.recognize(c)[1] >= COMMAND_THRESHOLD or reminders.is_request(c)
+
+    async def _user_command_flow(self, raw, cmd, now):
+        if self.pending_teach:
+            trig, deadline = self.pending_teach
+            self.pending_teach = None
+            if now < deadline:
+                if any(w in CANCEL_WORDS for w in cmd.split()) or "не надо" in cmd:
+                    await self.say("Хорошо, не запоминаю.")
+                else:
+                    await self._teach(trig, raw)
+                return True
+        m = usercmds.TEACH_RE.search(raw)
+        if m:
+            await self._teach(m.group("trig"), m.group("act"))
+            return True
+        m = usercmds.TEACH_ONLY_RE.search(raw)
+        if m:
+            trig = self._clean(usercmds.strip_quotes(m.group("trig")))
+            if not trig:
+                await self.say("Скажи так: «Запомни команду игровой режим, её действие запусти стим и спрячься».")
+                return True
+            self.pending_teach = (trig, now + 40)
+            await self.say(f"Что мне делать по команде «{trig}»?")
+            return True
+        m = usercmds.FORGET_RE.search(raw)
+        if m:
+            trig = self._clean(usercmds.strip_quotes(m.group("trig")))
+            removed = self.usercmds.remove(trig)
+            await self.say(f"Забыла команду «{removed['trigger']}»." if removed else f"Я не помню команды «{trig}».")
+            return True
+        item = self.usercmds.find(cmd) if cmd else None
+        if item:
+            await self.run_user_command(item)
+            return True
+        return False
+
+    async def _teach(self, trig, action):
+        trigger = self._clean(usercmds.strip_quotes(trig))
+        steps, verb = [], None
+        for st in usercmds.split_action(action.lower()):
+            first = st.split()[0]
+            if first.startswith(LAUNCH_STEMS + CLOSE_STEMS):
+                verb = first
+            elif verb and not self._known_step(st):
+                st = f"{verb} {st}"              # «открой телеграм и спотифай» -> «открой спотифай»
+            steps.append(st)
+        if not trigger or not steps:
+            await self.say("Не поняла. Скажи: «Запомни команду …, её действие …».")
+            return
+        if any(self._clean(st) == trigger for st in steps):
+            await self.say("Команда не может вызывать саму себя.")
+            return
+        existed = self.usercmds.add(trigger, steps)
+        reply = f"{'Обновила' if existed else 'Запомнила'}: «{trigger}» — {', '.join(steps)}."
+        unknown = [st for st in steps if not self._known_step(st)]
+        if unknown:
+            reply += f" «{unknown[0]}» я не знаю как команду — на это просто отвечу."
+        print(f"[команды] {trigger!r} -> {steps}")
+        await self.say(reply)
+
+    async def run_user_command(self, item):
+        if self.macro_depth >= 3:
+            await self.say("Мои команды вызывают друг друга по кругу — остановилась.")
+            return
+        print(f"[команды] выполняю {item['trigger']!r}: {item['steps']}")
+        self.macro_depth += 1
+        try:
+            for i, st in enumerate(item["steps"]):
+                if i:
+                    await asyncio.sleep(1.2)     # чтобы облачка успели прочитать
+                text, url = usercmds.say_text(st), usercmds.url_of(st)
+                if text:
+                    await self.say(text[0].upper() + text[1:])
+                elif url:
+                    await asyncio.to_thread(webbrowser.open, url)
+                    await self.say(f"Открываю {url.split('//', 1)[-1].split('/')[0]}.")
+                else:
+                    await self.process(st, source="macro")
+        finally:
+            self.macro_depth -= 1
+
+    # ---------- напоминания и таймеры ----------
+
+    async def _reminder_flow(self, raw, cmd, now):
+        words = cmd.split()
+        about = any(w.startswith(("напомин", "таймер", "будильник")) for w in words)
+
+        if self.pending_remind:
+            first, deadline = self.pending_remind
+            self.pending_remind = None
+            if now < deadline:
+                if any(w in CANCEL_WORDS for w in words) or "не надо" in cmd:
+                    await self.say("Хорошо, не напоминаю.")
+                    return True
+                r = reminders.parse(first + " " + raw, now)
+                if r:
+                    await self._add_reminder(r, now)
+                    return True
+
+        if about and any(w.startswith(("какие", "мои", "список", "покажи", "есть")) for w in words) \
+                or "что ты должна напомнить" in cmd:
+            items = self.reminders.upcoming()
+            if not items:
+                await self.say("Напоминаний и таймеров нет.")
+            else:
+                listing = "; ".join(reminders.describe(r, now) for r in items[:5])
+                more = f" И ещё {len(items) - 5}." if len(items) > 5 else ""
+                await self.say(f"Есть: {listing}.{more}", duration=min(15, 4 + 2.5 * len(items[:5])))
+            return True
+
+        if about and any(w.startswith(("отмен", "удали", "убери", "сбрось", "выключи", "останови", "сотри")) for w in words):
+            if any(w in ("все", "всё") for w in words):
+                n = self.reminders.clear()
+                await self.say(f"Убрала всё ({n})." if n else "Напоминаний и так нет.")
+                return True
+            kind = "timer" if "таймер" in cmd else "alarm" if "будильник" in cmd else None
+            query = " ".join(w for w in words if not w.startswith(("отмен", "удали", "убери", "сбрось", "выключи",
+                                                                     "останови", "сотри", "напомин", "таймер", "будильник", "про", "о", "об")))
+            gone = self.reminders.cancel(query, kind)
+            await self.say(f"Отменила: {reminders.describe(gone[0], now)}." if gone else
+                           {"timer": "Таймеров нет.", "alarm": "Будильников нет."}.get(kind, "Нечего отменять."))
+            return True
+
+        if "сколько осталось" in cmd or ("сколько" in text_words(raw) and "осталось" in cmd):
+            items = self.reminders.upcoming()
+            timers = [r for r in items if r["kind"] == "timer"] or items
+            if not timers:
+                await self.say("Сейчас ничего не засечено.")
+            else:
+                r = timers[0]
+                await self.say(f"Осталось {reminders.left_words(r['when'] - now)}"
+                               + (f" — {reminders.what_words(r)}." if r["text"] else "."))
+            return True
+
+        if reminders.is_request(raw):
+            r = reminders.parse(raw, now)
+            if r:
+                await self._add_reminder(r, now)
+            else:
+                self.pending_remind = (raw, now + 40)
+                await self.say("Когда напомнить? Например: «через 10 минут» или «в 18:30».")
+            return True
+        return False
+
+    async def _add_reminder(self, r, now):
+        self.reminders.add(r)
+        print(f"[напоминания] {reminders.describe(r, now)}")
+        await self.say(reminders.confirm_text(r, now))
+
+    async def reminders_loop(self):
+        # что пропустили, пока программа была закрыта
+        missed = self.reminders.due()
+        for _ in range(30):
+            if self.clients:
+                break
+            await asyncio.sleep(1)
+        await asyncio.sleep(3)
+        recent = [r for r in missed if time.time() - r["when"] < 12 * 3600]
+        if recent:
+            await self._fire(recent[0], prefix="Пока меня не было: ")
+            for r in recent[1:]:
+                await asyncio.sleep(6)
+                await self._fire(r, prefix="И ещё: ")
+        while True:
+            for r in self.reminders.due():
+                await self._fire(r)
+                await asyncio.sleep(2)
+            await asyncio.sleep(1)
+
+    async def _fire(self, r, prefix=""):
+        if self.sleep_mode:
+            self.sleep_mode = False
+            await self._sleep_visual(False)
+        text = prefix + reminders.fire_text(r)
+        fired = time.time()
+        await asyncio.to_thread(chime)
+        await self.say(text, urgent=True, duration=8.0)
+
+        async def again():          # не ответили и не тронули — повторит один раз через минуту
+            await asyncio.sleep(60)
+            if self.last_interaction < fired:
+                await asyncio.to_thread(chime)
+                await self.say("Ещё раз: " + reminders.fire_text(r), urgent=True, duration=8.0)
+        asyncio.create_task(again())
 
     # ---------- программы ----------
 
@@ -500,6 +712,7 @@ class Brain:
             music_task = asyncio.create_task(self.music_loop())
             self.apps.refresh()   # список программ — в фоне (если старше суток)
             apps_task = asyncio.create_task(self.apps_loop())
+            rem_task = asyncio.create_task(self.reminders_loop())
             listener = await asyncio.to_thread(self.start_voice)
             await self.quit_event.wait()
             await self.broadcast({"type": "quit"})
@@ -509,8 +722,26 @@ class Brain:
             follow_task.cancel()
             music_task.cancel()
             apps_task.cancel()
+            rem_task.cancel()
             if listener:
                 listener.stop()
+
+
+def text_words(text):
+    return [w.strip(".,!?:;") for w in text.split()]
+
+
+def chime():
+    """Звук уведомления Windows — чтобы напоминание услышали, даже если не смотрят на экран."""
+    if sys.platform != "win32":
+        return
+    try:
+        import winsound
+        winsound.PlaySound("SystemNotification", winsound.SND_ALIAS)
+        time.sleep(0.15)
+        winsound.PlaySound("SystemNotification", winsound.SND_ALIAS)
+    except (RuntimeError, ImportError):
+        pass
 
 
 class Tee:
