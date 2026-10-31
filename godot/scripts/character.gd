@@ -37,6 +37,9 @@ var materials: Array[ShaderMaterial] = []
 var all_materials: Array[ShaderMaterial] = []
 ## Текущая поза (имя анимации): idle, idle_sit, idle_lying, idle_sit_on_Window...
 var current_pose := "idle"
+## Смена позы (стоит -> сидит и т.п.) — мгновенно под вспышкой глитча, а не плавным перетеканием.
+@export var glitch_switch := true
+signal pose_glitch(from: String, to: String)
 ## Сколько секунд перетекать из конца цикла в его начало.
 @export var loop_blend := 0.6
 var _loop_anims := {}
@@ -261,6 +264,9 @@ func set_pose(pose: String, blend := 0.25) -> bool:
 	var found := _resolve_animation(pose) if anim else ""
 	if found == "":
 		return false
+	if glitch_switch and blend > 0.0 and found != current_pose and glitch_material != null:
+		pose_glitch.emit(current_pose, found)
+		blend = 0.0          # переключаемся сразу — рывок прячется под помехами
 	current_pose = found
 	_update_mirror()
 	return play(_pose_variant(found), blend)

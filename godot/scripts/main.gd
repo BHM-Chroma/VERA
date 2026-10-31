@@ -142,7 +142,18 @@ func _build_glitch() -> void:
 	add_child(layer)
 	character.glitch_material = _glitch_mat
 	character.vanish = character.vanish
+	character.pose_glitch.connect(_on_pose_glitch)
 	_ambient_timer = randf_range(ambient_glitch_min, ambient_glitch_max)
+
+
+## Смена позы: вспышка помех, под которой поза переключается мгновенно.
+## Взяли/отпустили мышкой — слабее (это бывает часто), остальное (сесть, встать) — сильнее.
+func _on_pose_glitch(from: String, to: String) -> void:
+	var light := from.to_lower().begins_with("drag") or to.to_lower().begins_with("drag")
+	if light:
+		glitch_pulse(0.5, 0.2)
+	else:
+		glitch_pulse(0.8, 0.35)
 
 
 ## Короткая вспышка помех: amount — сила, time — длительность.
@@ -540,7 +551,6 @@ func _update_boredom(delta: float) -> void:
 		character.screen_side = _screen_side()
 		# садится «прямо» (idle_sit_default), а если такой позы нет — как раньше
 		character.set_pose("idle_sit_default" if character.has_animation("idle_sit_default") else "idle_sit", 0.8)
-		glitch_pulse(0.4, 0.25)
 
 
 ## С какой стороны экрана она сейчас: -1 — левая половина, 1 — правая.
