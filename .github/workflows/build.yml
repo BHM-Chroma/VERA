@@ -81,7 +81,7 @@ jobs:
           pyinstaller --noconfirm --clean --onedir --noconsole --name VeronikaBrain
           --collect-all vosk --collect-data speech_recognition
           --hidden-import pycaw.pycaw --hidden-import win32timezone --collect-all winrt
-          --hidden-import webrtcvad --hidden-import _webrtcvad
+          --hidden-import webrtcvad --hidden-import _webrtcvad --additional-hooks-dir hooks
           brain.py
 
       - uses: actions/upload-artifact@v4
