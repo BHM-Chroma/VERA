@@ -26,13 +26,19 @@ from paths import path
 FILE = path("spotify.json")
 PORT = 8766
 REDIRECT = f"http://127.0.0.1:{PORT}/callback"
-SCOPES = "user-modify-playback-state user-read-playback-state"
+SCOPES = ("user-modify-playback-state user-read-playback-state "
+          "playlist-read-private playlist-read-collaborative user-library-read")
+LIBRARY_SCOPES = {"playlist-read-private", "user-library-read"}
 API = "https://api.spotify.com/v1"
 CLIENT_ID_RE = re.compile(r"\b[0-9a-fA-F]{32}\b")
 
 
 class SpotifyError(Exception):
     """Ошибка с готовой фразой для облачка."""
+
+
+class NeedReauth(SpotifyError):
+    """Нужно ещё одно разрешение от человека (видеть плейлисты) — снова «Принять» в Spotify."""
 
 
 def _why(r):
@@ -147,6 +153,8 @@ class Spotify:
         self._store_tokens(r.json())
 
     def _store_tokens(self, tok):
+        if tok.get("scope") is not None:
+            self.data["scope"] = tok["scope"]
         self.data["access_token"] = tok["access_token"]
         self.data["expires"] = time.time() + int(tok.get("expires_in", 3600)) - 60
         if tok.get("refresh_token"):
@@ -262,14 +270,37 @@ class Spotify:
             return {}
 
     def play(self, uri, name="", check=None):
-        """Включает трек в Spotify на этом компьютере и проверяет, что он заиграл.
+        """Включить один трек."""
+        self._start({"uris": [uri]}, name, uri, check)
+
+    def play_context(self, context_uri, check=None, track_uri="", track_name="", shuffle=None):
+        """Включить плейлист (с начала, вперемешку или с нужного трека)."""
+        body = {"context_uri": context_uri}
+        if track_uri:
+            body["offset"] = {"uri": track_uri}
+        self._start(body, track_name, context_uri, check, shuffle=shuffle)
+
+    def play_uris(self, uris, check=None, name=""):
+        """Включить список треков (например, «Любимые треки»)."""
+        self._start({"uris": uris}, name, uris[0], check)
+
+    def set_shuffle(self, on):
+        dev = self._this_pc(self._wait_devices(start_app=False))
+        q = f"?state={'true' if on else 'false'}" + (f"&device_id={dev['id']}" if dev else "")
+        r = self._api("PUT", "/me/player/shuffle" + q)
+        if r.status_code not in (200, 202, 204):
+            raise SpotifyError(f"Spotify не смог переключить перемешивание ({r.status_code}: {_why(r)}).")
+
+    def _start(self, body, name, open_uri, check, shuffle=None):
+        """Включает в Spotify на этом компьютере и проверяет, что заиграло.
 
         check() -> (играет ли, название) — что реально играет, по данным Windows. Spotify для приложений
-        в режиме разработки не сообщает, что сейчас играет, и иногда, приняв команду, ставит трек на паузу,
-        поэтому шаги идут по очереди, пока Windows не покажет нужную песню:
+        в режиме разработки не сообщает, что сейчас играет, и иногда, приняв команду, ставит на паузу,
+        поэтому шаги идут по очереди, пока Windows не покажет нужное:
           1) команда «играй» на этот ПК;
-          2) открыть трек в самом приложении (это «будит» плеер) + снова «играй»;
-          3) трек загружен, но на паузе — нажать мультимедийную клавишу Play."""
+          2) открыть трек/плейлист в самом приложении (это «будит» плеер) + снова «играй»;
+          3) нужная песня загружена, но на паузе — нажать мультимедийную клавишу Play.
+        name — какая песня должна заиграть ("" — любая новая, например начало плейлиста)."""
         devices = self._wait_devices(start_app=True)
         print(f"[spotify] устройства: {[(d.get('name'), d.get('type'), d.get('is_active')) for d in devices]}")
         dev = self._this_pc(devices)
@@ -278,11 +309,28 @@ class Spotify:
         if not dev.get("is_active"):
             self._api("PUT", "/me/player", json={"device_ids": [dev["id"]], "play": False})
             time.sleep(0.6)
+        if shuffle is not None:
+            self._api("PUT", f"/me/player/shuffle?state={'true' if shuffle else 'false'}&device_id={dev['id']}")
 
         want = _norm(name)
+        before = ("", False)
+        if check:
+            try:
+                before = check()[::-1]          # (название, играет ли)
+            except Exception:  # noqa: BLE001
+                pass
+
+        def matches(on, title):
+            if not on:
+                return False
+            if want:
+                t = _norm(title)
+                return bool(t) and (t == want or want in t or t in want)
+            # нужна «любая новая»: играет и это не то, что играло до команды
+            return not before[1] or _norm(title) != _norm(before[0])
 
         def playing_now(wait):
-            """Ждёт до wait секунд, пока заиграет нужная песня. (заиграла?, что сейчас, играет ли)"""
+            """Ждёт до wait секунд, пока заиграет нужное. (заиграло?, что сейчас, играет ли)"""
             title, on = "", False
             for _ in range(int(wait / 0.5)):
                 time.sleep(0.5)
@@ -295,12 +343,12 @@ class Spotify:
                 else:
                     st = self._now_playing()
                     on, title = bool(st.get("is_playing")), (st.get("item") or {}).get("name", "")
-                if on and want and (_norm(title) == want or want in _norm(title) or _norm(title) in want):
+                if matches(on, title):
                     return True, title, on
             return False, title, on
 
         def send_play():
-            r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json={"uris": [uri]})
+            r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json=body)
             if r.status_code in (200, 202, 204):
                 return
             reason = ""
@@ -314,10 +362,10 @@ class Spotify:
             if r.status_code == 404:
                 self._api("PUT", "/me/player", json={"device_ids": [dev["id"]], "play": False})
                 time.sleep(0.8)
-                r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json={"uris": [uri]})
+                r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json=body)
                 if r.status_code in (200, 202, 204):
                     return
-            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}: {_why(r)}).")
+            raise SpotifyError(f"Spotify не смог включить ({r.status_code}: {_why(r)}).")
 
         # 1) просто «играй»
         send_play()
@@ -325,9 +373,9 @@ class Spotify:
         print(f"[spotify] шаг 1: {'играет' if ok else 'нет'} (сейчас: {title!r}, играет={on})")
         if ok:
             return
-        # 2) открыть трек в приложении и снова «играй»
+        # 2) открыть в приложении и снова «играй»
         try:
-            os.startfile(uri)              # type: ignore[attr-defined]
+            os.startfile(open_uri)         # type: ignore[attr-defined]
             time.sleep(1.2)
         except (OSError, AttributeError):
             pass
@@ -337,17 +385,109 @@ class Spotify:
         if ok:
             return
         # 3) нужная песня загружена, но стоит на паузе — нажимаем Play
-        # только если Windows точно видит нужную песню на паузе — иначе клавиша выключила бы музыку
-        if check and not on and want and _norm(title) and (_norm(title) == want or want in _norm(title)):
+        # только если Windows точно видит нужное на паузе — иначе клавиша выключила бы музыку
+        loaded = bool(title) and ((want and (_norm(title) == want or want in _norm(title)))
+                                  or (not want and _norm(title) != _norm(before[0])))
+        if check and not on and loaded:
             from music import press
             press("play_pause")
             ok, title, on = playing_now(2.5)
             print(f"[spotify] шаг 3: {'играет' if ok else 'нет'} (сейчас: {title!r}, играет={on})")
             if ok:
                 return
-        if on and title:
+        if on and title and want:
             raise SpotifyError(f"Spotify вместо этого играет «{title}». Попробуй сказать название точнее.")
-        raise SpotifyError("Spotify принял команду, но трек не заиграл. Нажми Play в Spotify один раз и повтори.")
+        raise SpotifyError("Spotify принял команду, но не заиграло. Нажми Play в Spotify один раз и повтори.")
+
+    # ---------- плейлисты и любимые ----------
+
+    def _need_library(self):
+        granted = set((self.data.get("scope") or "").split())
+        if not LIBRARY_SCOPES <= granted:
+            raise NeedReauth("Чтобы видеть твои плейлисты, нужно ещё одно разрешение в Spotify.")
+
+    def _get_json(self, url, params=None):
+        r = self._api("GET", url, params=params)
+        if r.status_code in (401, 403) and "scope" in _why(r).lower():
+            raise NeedReauth("Чтобы видеть твои плейлисты, нужно ещё одно разрешение в Spotify.")
+        if r.status_code != 200:
+            print(f"[spotify] GET {url} {r.status_code}: {_why(r)!r}")
+            return None
+        try:
+            return r.json()
+        except ValueError:
+            return None
+
+    def playlists(self):
+        """Твои плейлисты (свои и на которые подписан): [{name, uri, id, own}]."""
+        self._need_library()
+        me = (self._get_json("/me") or {}).get("id", "")
+        out = []
+        for offset in range(0, 300, 50):
+            page = self._get_json("/me/playlists", {"limit": 50, "offset": offset})
+            if not page:
+                break
+            for p in page.get("items") or []:
+                if p and p.get("uri"):
+                    out.append({"name": p.get("name", ""), "uri": p["uri"], "id": p.get("id", ""),
+                                "own": (p.get("owner") or {}).get("id") == me or p.get("collaborative", False)})
+            if not page.get("next"):
+                break
+        return out
+
+    def find_playlist(self, query):
+        from apps import translit
+        lists = self.playlists()
+        q, lat = query.lower(), translit(query.lower())
+        best, best_s = None, 0
+        for p in lists:
+            n = p["name"].lower()
+            sc = max(fuzz.token_set_ratio(q, n), fuzz.ratio(q, n), fuzz.token_set_ratio(lat, translit(n)))
+            if sc > best_s:
+                best, best_s = p, sc
+        print(f"[spotify] плейлист «{query}» -> {best and best['name']} ({best_s})")
+        return best if best_s >= 70 else None
+
+    def playlist_tracks(self, pid):
+        """Треки плейлиста: [{uri, name, artists}]. Spotify отдаёт их только для твоих плейлистов."""
+        out = []
+        for offset in range(0, 500, 50):
+            page = (self._get_json(f"/playlists/{pid}/items", {"limit": 50, "offset": offset})
+                    or self._get_json(f"/playlists/{pid}/tracks", {"limit": 50, "offset": offset}))
+            if not page:
+                break
+            for it in page.get("items") or []:
+                t = (it or {}).get("item") or (it or {}).get("track") or {}
+                if t.get("uri", "").startswith("spotify:track:"):
+                    out.append({"uri": t["uri"], "name": t.get("name", ""),
+                                "artists": ", ".join(a.get("name", "") for a in t.get("artists") or [])})
+            if not page.get("next"):
+                break
+        return out
+
+    def find_in_playlist(self, tracks, query):
+        from apps import translit
+        q, lat = query.lower(), translit(query.lower())
+        best, best_s = None, 0
+        for t in tracks:
+            full = f"{t['name']} {t['artists']}".lower()
+            sc = max(fuzz.token_set_ratio(q, full), fuzz.partial_ratio(q, t["name"].lower()),
+                     fuzz.token_set_ratio(lat, translit(full)))
+            if sc > best_s:
+                best, best_s = t, sc
+        return best if best_s >= 70 else None
+
+    def liked_tracks(self, limit=100):
+        self._need_library()
+        out = []
+        for offset in range(0, limit, 50):
+            page = self._get_json("/me/tracks", {"limit": 50, "offset": offset})
+            if not page:
+                break
+            out += [(it.get("track") or it.get("item") or {}).get("uri") for it in page.get("items") or []]
+            if not page.get("next"):
+                break
+        return [u for u in out if u]
 
 
 def _norm(text):
@@ -359,24 +499,52 @@ def _norm(text):
 
 # ---------- разбор фразы ----------
 
-PLAY_RE = re.compile(
-    r"(?:включи|поставь|найди|запусти|сыграй|играй|врубай|вруби)\s+(?:мне\s+)?"
-    r"(?:песню|трек|композицию|песенку)\s+(?P<q>.+)$")
-SPOTIFY_RE = re.compile(
-    r"(?:включи|поставь|найди|запусти|сыграй|вруби)\s+(?:мне\s+)?(?P<q>.+?)\s+(?:в|на|из)\s+спот[иы]ф\w*$")
+VERB = r"(?:включи|поставь|найди|запусти|сыграй|играй|врубай|вруби|давай)"
+PLAY_RE = re.compile(VERB + r"\s+(?:мне\s+)?(?:песню|трек|композицию|песенку)\s+(?P<q>.+)$")
+SPOTIFY_RE = re.compile(VERB + r"\s+(?:мне\s+)?(?P<q>.+?)\s+(?:в|на|из)\s+спот[иы]ф\w*$")
+PLAYLIST_RE = re.compile(VERB + r"\s+(?:мне\s+)?(?:мой\s+|моих\s+)?(?:плейлист|плей лист|подборку)\s+(?P<pl>.+)$")
+FROM_PL_RE = re.compile(r"^(?P<q>.+?)\s+(?:из|с)\s+(?:моего\s+)?(?:плейлиста|плей листа|подборки)\s+(?P<pl>.+)$")
+LIKED_RE = re.compile(VERB + r"\s+(?:мне\s+)?(?:мои\s+|мою\s+)?(?:любим\w*|лайкнут\w*|понравивш\w*|сохран[её]нн\w*|избранн\w*)"
+                      r"(?:\s+(?:треки|песни|музыку))?\s*$")
+SHUFFLE_WORDS = re.compile(r"\s*\b(?:вперемешку|в случайном порядке|рандомно|в разнобой|шафл\w*|перемешав|перемешанн\w*)\b")
 NOT_QUERY = {"на паузу", "дальше", "следующую", "другую", "предыдущую", "заново", "погромче", "потише"}
 
 
-def parse_request(text):
-    """«включи песню numb linkin park» -> «numb linkin park». None — это не просьба найти трек."""
-    t = text.lower().strip(" .!?")
-    m = PLAY_RE.search(t) or SPOTIFY_RE.search(t)
-    if not m:
-        return None
-    q = m.group("q").strip(" .,!?«»\"")
+def _clean_q(q):
+    q = q.strip(" .,!?«»\"")
     q = re.sub(r"^(?:под названием|называется)\s+", "", q)
     q = re.sub(r"\s+(?:от|исполнителя|группы|исполнитель|в исполнении)\s+", " ", q)
     q = re.sub(r"\s+(?:в|на|из)\s+спот[иы]ф\w*$", "", q)
+    return q.strip(" .,!?«»\"")
+
+
+def parse_request(text):
+    """Что просят включить. Возвращает dict или None (это не просьба к Spotify):
+       {"kind": "track", "q": ...}
+       {"kind": "track_in_playlist", "q": ..., "playlist": ...}
+       {"kind": "playlist", "playlist": ..., "shuffle": bool}
+       {"kind": "liked", "shuffle": bool}
+       {"kind": "shuffle", "on": bool}"""
+    t = text.lower().strip(" .!?")
+    if re.search(r"\b(?:перемешай|включи перемешивание|включи случайный порядок|включи шафл)\b", t):
+        return {"kind": "shuffle", "on": True}
+    if re.search(r"\b(?:выключи|отключи|не)\s+(?:перемешивание|перемешивай|случайный порядок|шафл)\b", t):
+        return {"kind": "shuffle", "on": False}
+    shuffle = bool(SHUFFLE_WORDS.search(t))
+    t = SHUFFLE_WORDS.sub("", t).strip()
+    if LIKED_RE.search(t) and "плейлист" not in t:
+        return {"kind": "liked", "shuffle": shuffle}
+    m = PLAYLIST_RE.search(t)
+    if m:
+        pl = _clean_q(m.group("pl"))
+        return {"kind": "playlist", "playlist": pl, "shuffle": shuffle} if len(pl) >= 2 else None
+    m = PLAY_RE.search(t) or SPOTIFY_RE.search(t)
+    if not m:
+        return None
+    q = _clean_q(m.group("q"))
+    f = FROM_PL_RE.search(q)
+    if f:
+        return {"kind": "track_in_playlist", "q": _clean_q(f.group("q")), "playlist": _clean_q(f.group("pl"))}
     if len(q) < 2 or q in NOT_QUERY:
         return None
-    return q
+    return {"kind": "track", "q": q}

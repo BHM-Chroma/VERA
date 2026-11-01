@@ -497,23 +497,71 @@ class Brain:
             await self.say("Отключила Spotify. Чтобы вернуть — скажи «подключи Spotify».")
             return True
 
-        query = spotify.parse_request(raw)
-        if not query:
+        req = spotify.parse_request(raw)
+        if not req:
             return False
         if not self.spotify.connected:
-            await self.say("Чтобы включать треки, сначала подключи Spotify — скажи «подключи Spotify».")
+            await self.say("Чтобы включать музыку, сначала подключи Spotify — скажи «подключи Spotify».")
             return True
         try:
-            found = await asyncio.to_thread(self.spotify.search, query)
-            if not found:
-                await self.say(f"Не нашла в Spotify трек «{query}».")
-                return True
-            print(f"[spotify] «{query}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
-            await asyncio.to_thread(self.spotify.play, found["uri"], found["name"], self._media_now)
-            await self.say(f"Включаю {found['name']} — {found['artists']}.")
+            await self._spotify_do(req)
+        except spotify.NeedReauth as e:
+            # нужно ещё одно разрешение (видеть плейлисты): «Принять» — и сразу выполняем просьбу
+            await self.say(f"{e} Открываю Spotify — нажми там «Принять».", duration=7.0)
+            try:
+                await asyncio.to_thread(self.spotify.authorize)
+                await self._spotify_do(req)
+            except spotify.SpotifyError as e2:
+                await self.say(str(e2))
         except spotify.SpotifyError as e:
             await self.say(str(e))
         return True
+
+    async def _spotify_do(self, req):
+        sp, kind = self.spotify, req["kind"]
+        check = self._media_now
+        if kind == "shuffle":
+            await asyncio.to_thread(sp.set_shuffle, req["on"])
+            await self.say("Перемешиваю." if req["on"] else "Играю по порядку.")
+            return
+        if kind == "liked":
+            uris = await asyncio.to_thread(sp.liked_tracks)
+            if not uris:
+                await self.say("Не нашла твоих любимых треков в Spotify.")
+                return
+            if req["shuffle"]:
+                random.shuffle(uris)
+            await asyncio.to_thread(sp.play_uris, uris, check)
+            await self.say("Включаю твои любимые треки" + (" вперемешку." if req["shuffle"] else "."))
+            return
+        if kind in ("playlist", "track_in_playlist"):
+            pl = await asyncio.to_thread(sp.find_playlist, req["playlist"])
+            if not pl:
+                await self.say(f"Не нашла у тебя плейлист «{req['playlist']}».")
+                return
+            if kind == "playlist":
+                await asyncio.to_thread(sp.play_context, pl["uri"], check, "", "", True if req["shuffle"] else None)
+                await self.say(f"Включаю плейлист «{pl['name']}»" + (" вперемешку." if req["shuffle"] else "."))
+                return
+            tracks = await asyncio.to_thread(sp.playlist_tracks, pl["id"])
+            t = sp.find_in_playlist(tracks, req["q"]) if tracks else None
+            if t:
+                await asyncio.to_thread(sp.play_context, pl["uri"], check, t["uri"], t["name"])
+                await self.say(f"Включаю {t['name']} — {t['artists']} из «{pl['name']}».")
+                return
+            if not tracks:
+                await self.say(f"В плейлист «{pl['name']}» Spotify заглянуть не даёт (он не твой) — "
+                               "включаю трек отдельно.")
+            else:
+                await self.say(f"В «{pl['name']}» нет «{req['q']}» — ищу во всём Spotify.")
+            req = {"kind": "track", "q": req["q"]}
+        found = await asyncio.to_thread(sp.search, req["q"])
+        if not found:
+            await self.say(f"Не нашла в Spotify трек «{req['q']}».")
+            return
+        print(f"[spotify] «{req['q']}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
+        await asyncio.to_thread(sp.play, found["uri"], found["name"], check)
+        await self.say(f"Включаю {found['name']} — {found['artists']}.")
 
     def _media_now(self):
         """Что реально играет сейчас по данным Windows: (играет ли, название). Из потока Spotify."""
