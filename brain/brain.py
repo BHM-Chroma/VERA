@@ -193,6 +193,8 @@ class Brain:
             if lst is not None:
                 if "sensitivity" in msg:
                     await asyncio.to_thread(lst.set_sensitivity, int(msg["sensitivity"]))
+                if "ptt_key" in msg:
+                    await asyncio.to_thread(lst.set_ptt_key, str(msg["ptt_key"]))
                 if muted != lst.state["muted"]:
                     await asyncio.to_thread(lst.set_muted, muted)
             else:
@@ -200,14 +202,14 @@ class Brain:
                 st = voice.load_state()
                 st["muted"] = muted
                 st["sensitivity"] = int(msg.get("sensitivity", st["sensitivity"]))
+                st["ptt_key"] = str(msg.get("ptt_key", st["ptt_key"]))
                 voice.save_state(st)
         elif kind == "voice_calibrate":
             lst = getattr(self, "listener", None)
             if lst is None or not lst.ready:
                 await self.say("Микрофон сейчас не работает — нечего подстраивать.")
             else:
-                await self.say("Тише секунду — слушаю шум в комнате…")
-                await asyncio.sleep(0.8)
+                await self.say("Тише пару секунд — слушаю шум в комнате…")
                 await asyncio.to_thread(lst.calibrate)
                 await self.say("Готово, подстроилась под шум.")
         elif kind == "poke":
@@ -260,6 +262,8 @@ class Brain:
         text = text.lower().strip()
         now = time.time()
         has_alias = any(a in text for a in self.aliases) or any(self._is_alias(w) for w in text.split())
+        if source == "voice_ptt":            # говорил с зажатой клавишей — точно ей, имя не нужно
+            has_alias, source = True, "voice"
 
         if source == "voice":
             if self.sleep_mode:
@@ -725,13 +729,21 @@ class Brain:
             print("[мозг] голос выключен в config.json")
             return None
 
-        def on_text(variants):
+        def on_text(variants, ptt=False):
+            if not variants:
+                # зажимал клавишу, но слов не разобрать
+                asyncio.run_coroutine_threadsafe(self.say("Не расслышала… Повтори?"), self.loop)
+                return
             text = self._pick_transcript(variants)
             if len(variants) > 1:
                 print(f"[голос] варианты: {variants} -> «{text}»")
-            asyncio.run_coroutine_threadsafe(self.process(text, source="voice"), self.loop)
+            asyncio.run_coroutine_threadsafe(self.process(text, source="voice_ptt" if ptt else "voice"), self.loop)
 
-        listener = VoiceListener(self.cfg, on_text, on_status=lambda s: print(f"[голос] {s}"))
+        def on_event(state):
+            # «слушаю» / «думаю» / «ничего» — персонаж показывает значок у головы
+            self.send_threadsafe({"type": "listening", "state": state})
+
+        listener = VoiceListener(self.cfg, on_text, on_status=lambda s: print(f"[голос] {s}"), on_event=on_event)
         self.listener = listener
         listener.start()
         return listener

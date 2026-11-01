@@ -55,15 +55,20 @@ var _carry_ready := false             # плита уже стоит под не
 var _carry_top := Vector2.ZERO        # верх плиты в окне (пиксели)
 
 enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART, AUTOHIDE,
-	MUTE, SENS_LOW, SENS_NORMAL, SENS_HIGH, CALIBRATE }
+	MUTE, SENS_LOW, SENS_NORMAL, SENS_HIGH, CALIBRATE, PTT_F8, PTT_RCTRL, PTT_RALT, PTT_XBUTTON, PTT_NONE }
+const PTT_IDS := {MenuId.PTT_F8: "f8", MenuId.PTT_RCTRL: "rctrl", MenuId.PTT_RALT: "ralt",
+	MenuId.PTT_XBUTTON: "xbutton1", MenuId.PTT_NONE: "none"}
 
 const TRAY_ICON := preload("res://assets/fx/tray.png")
 const TRAY_ICON_MUTED := preload("res://assets/fx/tray_muted.png")
 const MIC_OFF_ICON := preload("res://assets/fx/mic_off.png")
+const MIC_ON_ICON := preload("res://assets/fx/mic_on.png")
 
 ## Микрофон: «не слушать» и чувствительность (0 — низкая, 1 — обычная, 2 — высокая).
 var mic_muted := false
 var mic_sensitivity := 1
+var ptt_key := "f8"
+var _listen_state := "idle"     # от мозга: idle / listening (слышит речь) / thinking (распознаёт)
 var _mic_menu: PopupMenu
 var _mic_icon: TextureRect
 var _mic_icon_timer := 0.0
@@ -99,6 +104,9 @@ func _ready() -> void:
 	auto_hide = bool(_settings.get_value("background", "auto_hide", true))
 	mic_muted = bool(_settings.get_value("voice", "muted", false))
 	mic_sensitivity = clampi(int(_settings.get_value("voice", "sensitivity", 1)), 0, 2)
+	ptt_key = String(_settings.get_value("voice", "ptt_key", "f8"))
+	if not ptt_key in PTT_IDS.values():
+		ptt_key = "f8"
 	platform = Platform.new()
 	platform.name = "Platform"
 	add_child(platform)
@@ -137,6 +145,7 @@ func _ready() -> void:
 var _micro_timer := 10.0
 var _glitch_mat: ShaderMaterial
 var _glitch_pulse_tw: Tween
+var _glitch_now := 0.0   # текущая сила вспышки помех (для области окна)
 var _ambient_timer := 90.0
 
 
@@ -177,7 +186,11 @@ func glitch_pulse(amount := 0.6, time := 0.35) -> void:
 		_glitch_pulse_tw.kill()
 	_glitch_mat.set_shader_parameter("amount", amount)
 	_glitch_pulse_tw = create_tween()
-	_glitch_pulse_tw.tween_method(func(v: float): _glitch_mat.set_shader_parameter("amount", v),
+	_glitch_now = amount
+	_pt_timer = 0.0          # сразу расширить область окна, чтобы полосы помех не обрезались
+	_glitch_pulse_tw.tween_method(func(v: float):
+		_glitch_mat.set_shader_parameter("amount", v)
+		_glitch_now = v,
 		amount, 0.0, time).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
 
 
@@ -391,16 +404,28 @@ func _place_bubble() -> void:
 
 ## Окно ловит мышь только внутри выпуклой оболочки вокруг костей (и облачка).
 ## Всё остальное окно пропускает клики к рабочему столу.
+## Важно: на Windows эта же область ОБРЕЗАЕТ всё, что рисуется в окне. Поэтому в неё входят
+## не только кости, но и всё вокруг: облачко, ноты, значок микрофона и полосы помех глитча.
 func _update_passthrough() -> void:
 	var pts := PackedVector2Array()
+	# во время помех полосы картинки разъезжаются в стороны — на это время область шире
+	var glitchy := _glitch_now > 0.02 or (character.vanish > 0.01 and character.vanish < 0.99)
+	var pad_x := hit_padding + (30.0 + 100.0 * maxf(_glitch_now, 0.5 if glitchy else 0.0) if glitchy else 0.0)
 	for p in character.get_outline_points_world():
 		if camera.is_position_behind(p):
 			continue
 		var s := camera.unproject_position(p)
 		for k in 8:
-			pts.append(s + Vector2.from_angle(k * TAU / 8.0) * hit_padding)
+			var d := Vector2.from_angle(k * TAU / 8.0)
+			pts.append(s + Vector2(d.x * pad_x, d.y * hit_padding))
+	var extra: Array[Rect2] = []
 	if bubble.visible:
-		var r := bubble.get_global_rect()
+		extra.append(bubble.get_global_rect())
+	if _mic_icon and _mic_icon.visible:
+		extra.append(_mic_icon.get_global_rect().grow(4.0))
+	if notes:
+		extra.append_array(notes.areas())
+	for r in extra:
 		pts.append_array([r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)])
 	if pts.size() < 3:
 		return
@@ -617,6 +642,12 @@ func _build_menu() -> void:
 	_mic_menu.add_radio_check_item("Чувствительность: обычная", MenuId.SENS_NORMAL)
 	_mic_menu.add_radio_check_item("Чувствительность: высокая (тихо говорю)", MenuId.SENS_HIGH)
 	_mic_menu.add_separator()
+	_mic_menu.add_radio_check_item("Зажми и говори: F8", MenuId.PTT_F8)
+	_mic_menu.add_radio_check_item("Зажми и говори: правый Ctrl", MenuId.PTT_RCTRL)
+	_mic_menu.add_radio_check_item("Зажми и говори: правый Alt", MenuId.PTT_RALT)
+	_mic_menu.add_radio_check_item("Зажми и говори: боковая кнопка мыши", MenuId.PTT_XBUTTON)
+	_mic_menu.add_radio_check_item("Без клавиши (только по имени)", MenuId.PTT_NONE)
+	_mic_menu.add_separator()
 	_mic_menu.add_item("Подстроиться под шум в комнате", MenuId.CALIBRATE)
 	_mic_menu.id_pressed.connect(_on_menu)
 	_menu.add_submenu_node_item("Микрофон", _mic_menu)
@@ -662,6 +693,8 @@ func _on_menu(id: int) -> void:
 			set_mic_muted(not mic_muted)
 		MenuId.SENS_LOW, MenuId.SENS_NORMAL, MenuId.SENS_HIGH:
 			set_mic_sensitivity({MenuId.SENS_LOW: 0, MenuId.SENS_NORMAL: 1, MenuId.SENS_HIGH: 2}[id])
+		MenuId.PTT_F8, MenuId.PTT_RCTRL, MenuId.PTT_RALT, MenuId.PTT_XBUTTON, MenuId.PTT_NONE:
+			set_ptt_key(PTT_IDS[id])
 		MenuId.CALIBRATE:
 			if brain.connected:
 				brain.send({"type": "voice_calibrate"})
@@ -761,6 +794,8 @@ func _open_menu(at: Vector2i) -> void:
 	for i in 3:
 		var mid: int = [MenuId.SENS_LOW, MenuId.SENS_NORMAL, MenuId.SENS_HIGH][i]
 		_mic_menu.set_item_checked(_mic_menu.get_item_index(mid), mic_sensitivity == i)
+	for pid in PTT_IDS:
+		_mic_menu.set_item_checked(_mic_menu.get_item_index(pid), PTT_IDS[pid] == ptt_key)
 	_menu.position = at
 	_menu.popup()
 
@@ -933,7 +968,7 @@ func _on_brain_connection(online: bool) -> void:
 
 func _send_voice_settings() -> void:
 	if brain.connected:
-		brain.send({"type": "voice_settings", "muted": mic_muted, "sensitivity": mic_sensitivity})
+		brain.send({"type": "voice_settings", "muted": mic_muted, "sensitivity": mic_sensitivity, "ptt_key": ptt_key})
 
 
 ## «Не слушать»: мозг полностью отпускает микрофон. Запоминается между запусками.
@@ -946,6 +981,15 @@ func set_mic_muted(value: bool) -> void:
 	_mic_icon_timer = 0.0
 	glitch_pulse(0.35, 0.15)
 	say("Не слушаю. Пиши мне в чат, если что." if value else "Снова слушаю!", 2.5)
+
+
+func set_ptt_key(key: String) -> void:
+	ptt_key = key
+	_settings.set_value("voice", "ptt_key", key)
+	_settings.save(SETTINGS_PATH)
+	_send_voice_settings()
+	var names := {"f8": "F8", "rctrl": "правый Ctrl", "ralt": "правый Alt", "xbutton1": "боковую кнопку мыши"}
+	say("Зажми %s и говори — услышу без имени." % names[key] if key != "none" else "Хорошо, только по имени.", 3.0)
 
 
 func set_mic_sensitivity(level: int) -> void:
@@ -963,7 +1007,7 @@ func _update_tray_icon() -> void:
 	_tray.tooltip = "VERONIKA%s — левый клик: спрятать/показать, правый: меню" % (" (не слушает)" if mic_muted else "")
 
 
-## Маленький перечёркнутый микрофон у её головы, пока «не слушать» включено.
+## Значок у головы: перечёркнутый микрофон — «не слушать»; розовый — слышит тебя / распознаёт.
 func _build_mic_icon() -> void:
 	_mic_icon = TextureRect.new()
 	_mic_icon.texture = MIC_OFF_ICON
@@ -982,10 +1026,17 @@ func _build_mic_icon() -> void:
 func _update_mic_icon(delta: float) -> void:
 	if _mic_icon == null:
 		return
-	var want := mic_muted and _shown and character.vanish <= 0.01 and not _sleeping
+	var listening := not mic_muted and _listen_state != "idle"
+	var want := (mic_muted or listening) and _shown and character.vanish <= 0.01 and not _sleeping
 	if not want:
-		_mic_icon.visible = false
+		if _mic_icon.visible:
+			_mic_icon.visible = false
+			_pt_timer = 0.0
 		return
+	_mic_icon.texture = MIC_OFF_ICON if mic_muted else MIC_ON_ICON
+	# слушает — горит ровно; распознаёт — мигает
+	_mic_icon.modulate.a = 0.9 if mic_muted or _listen_state == "listening" \
+		else 0.45 + 0.45 * absf(sin(Time.get_ticks_msec() / 180.0))
 	_mic_icon_timer -= delta
 	if _mic_icon_timer > 0.0 and _mic_icon.visible:
 		return
@@ -999,8 +1050,12 @@ func _update_mic_icon(delta: float) -> void:
 	var pos := Vector2(head.x + 78.0, max(bbox.position.y - 4.0, head.y - 70.0))
 	if pos.x + _mic_icon.size.x > window_size.x - 2:
 		pos.x = head.x - 78.0 - _mic_icon.size.x
+	pos.x = clampf(pos.x, 2.0, window_size.x - _mic_icon.size.x - 2.0)
+	pos.y = clampf(pos.y, 2.0, window_size.y - _mic_icon.size.y - 2.0)
 	_mic_icon.position = pos
-	_mic_icon.visible = true
+	if not _mic_icon.visible:
+		_mic_icon.visible = true
+		_pt_timer = 0.0      # значок должен войти в область окна, иначе Windows его обрежет
 
 
 func _on_brain_message(msg: Dictionary) -> void:
@@ -1018,6 +1073,14 @@ func _on_brain_message(msg: Dictionary) -> void:
 			elif character.current_pose == character.idle_animation:
 				# разовые анимации (alarm и т.п.) — только когда стоит, а не сидит/лежит
 				character.play(anim_name)
+		"listening":
+			var was := _listen_state
+			_listen_state = String(msg.get("state", "idle"))
+			if _listen_state == "listening":
+				attention()
+				if was == "idle":
+					glitch_pulse(0.2, 0.08)
+			_mic_icon_timer = 0.0
 		"speak_start":
 			character.set_talking(true)
 			_talk_left = 0.0

@@ -16,9 +16,9 @@
         "vosk_model_path": "models/vosk-model-small-ru-0.22",
         "require_wake_word": true,
         "conversation_window_sec": 12,
-        "phrase_time_limit": 10,
-        "pause_sec": 0.6,
-        "device_name": ""
+        "device_name": "",
+        "end_silence": 0.8,
+        "max_phrase_sec": 12
     },
     "monitor": {
         "interval_sec": 2,

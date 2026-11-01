@@ -61,6 +61,8 @@ func _spawn() -> void:
 	var rise_px := minf(rise, start.y - (vis.position.y + edge))
 
 	var s := Sprite3D.new()
+	# весь путь ноты (пиксели окна) — окно должно его не обрезать, см. main._update_passthrough
+	s.set_meta("area", Rect2(start.x - side_room, start.y - rise_px - edge, side_room * 2.0, rise_px + edge * 2.0))
 	s.texture = TEXTURES.pick_random()
 	s.pixel_size = randf_range(2.0, 2.6) / px             # 1 пиксель картинки ≈ 2–2.6 пикселя экрана
 	s.flip_h = randf() < 0.3
@@ -97,6 +99,7 @@ func _spawn() -> void:
 		s.set_instance_shader_parameter("glitch", clampf(g, 0.0, 1.0))
 	, 0.0, 1.0, life)
 	tw.chain().tween_callback(s.queue_free)
+	main._pt_timer = 0.0     # сразу обновить область окна под новую ноту
 
 
 ## Видимая часть окна персонажа (пиксели окна): окно ∩ экран.
@@ -107,6 +110,15 @@ func _visible_rect() -> Rect2:
 	var on_screen := Rect2(Vector2(scr.position) - wpos, Vector2(scr.size))
 	var r := win.intersection(on_screen)
 	return r if r.has_area() else win
+
+
+## Где сейчас летают ноты (пиксели окна) — чтобы окно их не обрезало.
+func areas() -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	for c in get_children():
+		if not c.is_queued_for_deletion() and c.has_meta("area"):
+			out.append(c.get_meta("area"))
+	return out
 
 
 ## Убрать все ноты (например, когда она рассыпается или прячется).
