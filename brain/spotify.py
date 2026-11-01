@@ -290,8 +290,7 @@ class Spotify:
                     try:
                         on, title = check()
                     except Exception as e:  # noqa: BLE001
-                        print(f"[spotify] проверка через Windows не удалась: {e}")
-                        check_failed[0] = True
+                        print(f"[spotify] проверка через Windows не удалась: {e!r} — считаю, что включилось")
                         return True, "", True
                 else:
                     st = self._now_playing()
@@ -299,8 +298,6 @@ class Spotify:
                 if on and want and (_norm(title) == want or want in _norm(title) or _norm(title) in want):
                     return True, title, on
             return False, title, on
-
-        check_failed = [False]
 
         def send_play():
             r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json={"uris": [uri]})
@@ -340,7 +337,8 @@ class Spotify:
         if ok:
             return
         # 3) нужная песня загружена, но стоит на паузе — нажимаем Play
-        if check and not on:
+        # только если Windows точно видит нужную песню на паузе — иначе клавиша выключила бы музыку
+        if check and not on and want and _norm(title) and (_norm(title) == want or want in _norm(title)):
             from music import press
             press("play_pause")
             ok, title, on = playing_now(2.5)

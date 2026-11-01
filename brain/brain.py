@@ -517,7 +517,9 @@ class Brain:
 
     def _media_now(self):
         """Что реально играет сейчас по данным Windows: (играет ли, название). Из потока Spotify."""
-        st = asyncio.run(music.get_state())
+        # тот же путь, что у нот и комментариев: опрос Windows в главном цикле (в отдельном потоке
+        # медиасеансы Windows отвечают пусто)
+        st = asyncio.run_coroutine_threadsafe(music.get_state(), self.loop).result(timeout=4)
         return bool(st.get("playing")), st.get("title", "")
 
     async def _spotify_auth(self):
