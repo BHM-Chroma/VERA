@@ -35,6 +35,15 @@ class SpotifyError(Exception):
     """Ошибка с готовой фразой для облачка."""
 
 
+def _why(r):
+    """Текст ошибки от самого Spotify (для лога и подсказки)."""
+    try:
+        e = r.json().get("error", {})
+        return (e.get("message") or e.get("reason") or "").strip() if isinstance(e, dict) else str(e)
+    except ValueError:
+        return (r.text or "")[:200].strip()
+
+
 class Spotify:
     def __init__(self):
         self.data = {}
@@ -181,11 +190,25 @@ class Spotify:
             tries.append(lat)                 # «линкин парк намб» -> «linkin park namb»
         best = None
         for q in tries:
-            r = self._api("GET", "/search", params={"q": q, "type": "track", "limit": 10, "market": "from_token"})
+            params = {"q": q, "type": "track", "limit": 10}
+            if not self.data.get("no_market"):
+                params["market"] = "from_token"
+            r = self._api("GET", "/search", params=params)
+            if r.status_code == 403 and "market" in params:
+                print(f"[spotify] поиск 403 с market: {_why(r)!r} — пробую без страны")
+                params.pop("market")
+                r = self._api("GET", "/search", params=params)
+                if r.status_code == 200:
+                    self.data["no_market"] = True
+                    self.save()
             if r.status_code == 403:
-                raise SpotifyError("Spotify не пускает: добавь свою почту в User Management приложения.")
+                why = _why(r)
+                print(f"[spotify] поиск 403: {why!r}")
+                raise SpotifyError(f"Spotify не пускает ({why or '403'}). Скажи «подключи Spotify» заново; "
+                                   "если не поможет — проверь, что в User Management та же почта, что в аккаунте Spotify.")
             if r.status_code != 200:
-                raise SpotifyError(f"Spotify ответил ошибкой ({r.status_code}).")
+                print(f"[spotify] поиск {r.status_code}: {_why(r)!r}")
+                raise SpotifyError(f"Spotify ответил ошибкой ({r.status_code}: {_why(r)}).")
             items = r.json().get("tracks", {}).get("items", [])
             for rank, t in enumerate(items):
                 artists = ", ".join(a["name"] for a in t.get("artists", []))
@@ -212,12 +235,13 @@ class Spotify:
         reason = ""
         try:
             reason = r.json().get("error", {}).get("reason", "")
-        except ValueError:
+        except (ValueError, AttributeError):
             pass
+        print(f"[spotify] play {r.status_code}: {reason!r} {_why(r)!r}")
         if r.status_code == 403 and reason == "PREMIUM_REQUIRED":
             raise SpotifyError("Spotify разрешает включать треки только с Premium.")
         if r.status_code != 404 and reason != "NO_ACTIVE_DEVICE":
-            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}).")
+            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}: {_why(r)}).")
         # нет активного устройства: ищем этот ПК, при необходимости запускаем Spotify
         devices = self._devices()
         if not devices:
@@ -235,7 +259,8 @@ class Spotify:
         dev = next((d for d in devices if d.get("type") == "Computer"), devices[0])
         r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json={"uris": [uri]})
         if r.status_code not in (200, 202, 204):
-            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}).")
+            print(f"[spotify] play на {dev.get('name')} {r.status_code}: {_why(r)!r}")
+            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}: {_why(r)}).")
 
 
 # ---------- разбор фразы ----------
