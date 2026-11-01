@@ -509,11 +509,16 @@ class Brain:
                 await self.say(f"Не нашла в Spotify трек «{query}».")
                 return True
             print(f"[spotify] «{query}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
-            await asyncio.to_thread(self.spotify.play, found["uri"], found["name"])
+            await asyncio.to_thread(self.spotify.play, found["uri"], found["name"], self._media_now)
             await self.say(f"Включаю {found['name']} — {found['artists']}.")
         except spotify.SpotifyError as e:
             await self.say(str(e))
         return True
+
+    def _media_now(self):
+        """Что реально играет сейчас по данным Windows: (играет ли, название). Из потока Spotify."""
+        st = asyncio.run(music.get_state())
+        return bool(st.get("playing")), st.get("title", "")
 
     async def _spotify_auth(self):
         await self.say("Открываю страницу Spotify — нажми там «Принять» (Agree).", duration=6.0)
