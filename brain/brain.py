@@ -24,6 +24,7 @@ from monitor import Monitor
 from voice import VoiceListener
 import windows_info
 import music
+import filesearch
 import reminders
 import spotify
 import usercmds
@@ -313,6 +314,8 @@ class Brain:
                 if picked:
                     if action == "close":
                         await self._close_app(picked)
+                    elif action in ("file_open", "file_show"):
+                        await self._file_act(picked, action == "file_open")
                     else:
                         self.apps.remember_choice(query, picked)
                         await self._launch_app(picked)
@@ -327,6 +330,8 @@ class Brain:
         if await self._user_command_flow(raw_orig, cmd, now):
             return
         if await self._spotify_flow(original, raw, cmd, now):
+            return
+        if await self._file_flow(raw, now):
             return
         if await self._reminder_flow(raw, cmd, now):
             return
@@ -516,6 +521,42 @@ class Brain:
         except spotify.SpotifyError as e:
             await self.say(str(e))
         return True
+
+    # ---------- поиск файлов ----------
+
+    async def _file_flow(self, raw, now):
+        req = filesearch.parse_request(raw)
+        if not req:
+            return False
+        what = filesearch.KIND_NAMES.get(req["kind"], "файл")
+        results = await asyncio.to_thread(filesearch.search, req["q"], req["kind"])
+        if not results:
+            await self.say(f"Не нашла {what} «{req['q']}».")
+            return True
+        top = results[0]
+        if len(results) == 1 or top["score"] - results[1]["score"] >= 8:
+            await self._file_act(top, req["open"])
+            return True
+        options = []
+        for r in results[:3]:
+            options.append({**r, "name": f"{r['name']} (папка {r['folder']})"})
+        listing = ", ".join(f"{i + 1}) {o['name']}" for i, o in enumerate(options))
+        self.pending_choice = (options, req["q"], now + 30, "file_open" if req["open"] else "file_show")
+        await self.say(f"Нашла несколько: {listing}. Какой {'открыть' if req['open'] else 'показать'}?",
+                       duration=min(15.0, 5 + 2.5 * len(options)))
+        return True
+
+    async def _file_act(self, item, open_it):
+        name = os.path.basename(item["path"].rstrip("\\/")) or item["path"]
+        try:
+            if open_it:
+                await asyncio.to_thread(filesearch.open_path, item["path"])
+                await self.say(f"Открываю {name}.")
+            else:
+                await asyncio.to_thread(filesearch.show_in_explorer, item["path"])
+                await self.say(f"Нашла: {name} — в папке {item['folder']}. Показываю.")
+        except OSError as e:
+            await self.say(f"Не получилось открыть {name}: {e}")
 
     async def _spotify_do(self, req):
         sp, kind = self.spotify, req["kind"]
