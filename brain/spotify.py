@@ -261,20 +261,26 @@ class Spotify:
         except ValueError:
             return {}
 
-    def play(self, uri):
-        """Включает трек именно в Spotify на этом компьютере и проверяет, что он заиграл."""
+    def play(self, uri, name=""):
+        """Включает трек в Spotify на этом компьютере и проверяет, что он заиграл.
+        Spotify может играть ту же песню под другим идентификатором (другой релиз), поэтому
+        «заиграл» — это совпал идентификатор ИЛИ название трека."""
         devices = self._wait_devices(start_app=True)
-        names = [(d.get("name"), d.get("type"), d.get("is_active")) for d in devices]
-        print(f"[spotify] устройства: {names}")
+        print(f"[spotify] устройства: {[(d.get('name'), d.get('type'), d.get('is_active')) for d in devices]}")
         dev = self._this_pc(devices)
         if dev is None:
             raise SpotifyError("Не вижу Spotify на этом компьютере. Открой приложение Spotify и повтори.")
+        if not dev.get("is_active"):
+            # сделать этот ПК активным (иначе команда может уйти на телефон / «призрака»)
+            self._api("PUT", "/me/player", json={"device_ids": [dev["id"]], "play": False})
+            time.sleep(0.6)
 
+        def ours(st):
+            item = st.get("item") or {}
+            return item.get("uri") == uri or (name and (item.get("name") or "").lower() == name.lower())
+
+        where = None
         for attempt in range(2):
-            if attempt or not dev.get("is_active"):
-                # сделать этот ПК активным устройством (без этого команда может уйти на телефон/«призрака»)
-                self._api("PUT", "/me/player", json={"device_ids": [dev["id"]], "play": False})
-                time.sleep(0.6)
             r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json={"uris": [uri]})
             if r.status_code not in (200, 202, 204):
                 reason = ""
@@ -286,25 +292,20 @@ class Spotify:
                 if r.status_code == 403 and reason == "PREMIUM_REQUIRED":
                     raise SpotifyError("Spotify разрешает включать треки только с Premium.")
                 if attempt == 0 and r.status_code == 404:
+                    self._api("PUT", "/me/player", json={"device_ids": [dev["id"]], "play": False})
+                    time.sleep(0.8)
                     continue
                 raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}: {_why(r)}).")
-            # проверяем: заиграло ли то, что просили, и где
-            for _ in range(6):
+            for _ in range(8):
                 time.sleep(0.5)
                 st = self._now_playing()
-                item = (st.get("item") or {}).get("uri")
                 where = (st.get("device") or {}).get("name")
-                if item == uri and st.get("is_playing"):
-                    print(f"[spotify] играет на {where}")
+                if ours(st):
+                    print(f"[spotify] играет на {where}: {(st.get('item') or {}).get('name')}")
                     return
-            print(f"[spotify] после play: трек={item}, играет={st.get('is_playing')}, устройство={where}")
-            # не заиграло — открываем трек в самом приложении (это «будит» плеер) и пробуем ещё раз
-            if attempt == 0:
-                try:
-                    os.startfile(uri)          # type: ignore[attr-defined]
-                    time.sleep(1.5)
-                except (OSError, AttributeError):
-                    pass
+            item = (self._now_playing().get("item") or {})
+            print(f"[spotify] после play сейчас: {item.get('name')!r} {item.get('uri')} на {where}")
+            # другой трек / ничего — пробуем ещё раз той же командой (без пауз и переключений)
         if where and where != dev.get("name"):
             raise SpotifyError(f"Spotify включил трек на другом устройстве («{where}»), а не на этом ПК.")
         raise SpotifyError("Spotify принял команду, но трек не заиграл. Нажми Play в Spotify один раз и повтори.")

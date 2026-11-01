@@ -509,7 +509,7 @@ class Brain:
                 await self.say(f"Не нашла в Spotify трек «{query}».")
                 return True
             print(f"[spotify] «{query}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
-            await asyncio.to_thread(self.spotify.play, found["uri"])
+            await asyncio.to_thread(self.spotify.play, found["uri"], found["name"])
             await self.say(f"Включаю {found['name']} — {found['artists']}.")
         except spotify.SpotifyError as e:
             await self.say(str(e))
