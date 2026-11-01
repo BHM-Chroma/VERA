@@ -117,13 +117,15 @@ def _index_search(words_variants, limit=60):
                                 for w in words if w)
             if not cond:
                 continue
-            sql = (f"SELECT TOP {limit} System.ItemPathDisplay, System.ItemName, System.ItemType "
+            # System.ItemUrl — настоящий путь («file:C:/Users/…/Desktop/…»); ItemPathDisplay — только подпись
+            # Проводника («C:\\Пользователи\\…\\Рабочий стол»), по ней файл не открыть
+            sql = (f"SELECT TOP {limit} System.ItemUrl, System.ItemName, System.ItemType "
                    f"FROM SystemIndex WHERE {cond} AND SCOPE='file:'")
             rs = create("ADODB.Recordset")
             rs.Open(sql, conn)
             while not rs.EOF:
-                path = rs.Fields.Item(0).Value
-                if path:
+                path = _url_to_path(rs.Fields.Item(0).Value)
+                if path and os.path.exists(path):
                     item_type = (rs.Fields.Item(2).Value or "").lower()
                     found.append((path, item_type in ("directory", "folder") or os.path.isdir(path)))
                 rs.MoveNext()
@@ -136,6 +138,28 @@ def _index_search(words_variants, limit=60):
         except Exception:  # noqa: BLE001
             pass
     return found
+
+
+def _url_to_path(url):
+    """«file:C:/Users/Aliba/OneDrive/Desktop/arts blend» -> «C:\\Users\\Aliba\\OneDrive\\Desktop\\arts blend»."""
+    if not url:
+        return ""
+    from urllib.parse import unquote
+    p = url[5:] if url.lower().startswith("file:") else url
+    p = p.lstrip("/") if re.match(r"^/+[A-Za-z]:", p) else p
+    if "%" in p:
+        p = unquote(p)
+    return os.path.normpath(p.replace("/", os.sep))
+
+
+RU_FOLDERS = {"desktop": "Рабочий стол", "documents": "Документы", "downloads": "Загрузки",
+              "pictures": "Изображения", "videos": "Видео", "music": "Музыка"}
+
+
+def _folder_name(path):
+    """Как папку зовут в Проводнике: Desktop -> «Рабочий стол»."""
+    parent = os.path.basename(os.path.dirname(path.rstrip("\\/"))) or os.path.dirname(path)
+    return RU_FOLDERS.get(parent.lower(), parent)
 
 
 def _roots():
@@ -205,7 +229,7 @@ def search(query, kind="file", limit=10):
         # чуть выше: недавние и не из временных/скрытых мест
         sc += min(5, max(0, 5 - (time.time() - mtime) / 86400 / 30)) if mtime else 0
         out.append({"path": path, "name": name, "is_dir": is_dir, "score": sc,
-                    "folder": os.path.basename(os.path.dirname(path.rstrip("\\/"))) or os.path.dirname(path)})
+                    "folder": _folder_name(path)})
     out.sort(key=lambda x: -x["score"])
     print(f"[файлы] «{query}» ({kind}, {source}): {len(out)} шт., лучшие: "
           f"{[(o['name'], round(o['score'])) for o in out[:3]]}")
