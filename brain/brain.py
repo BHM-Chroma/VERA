@@ -25,6 +25,7 @@ from voice import VoiceListener
 import windows_info
 import music
 import reminders
+import spotify
 import usercmds
 
 from paths import BASE_DIR
@@ -110,6 +111,8 @@ class Brain:
         self.pending_teach = None      # (команда, срок) — спросила «что делать по команде …?»
         self.pending_remind = None     # (фраза, срок) — спросила «когда напомнить?»
         self.macro_depth = 0           # своя команда вызывает другие — защита от зацикливания
+        self.spotify = spotify.Spotify()
+        self.pending_spotify = 0.0     # до этого времени ждём Client ID в чате
 
     # ---------- связь с персонажем ----------
 
@@ -323,6 +326,8 @@ class Brain:
         raw_orig = " ".join(w for w in original.split() if not self._is_alias(w.lower()))
         if await self._user_command_flow(raw_orig, cmd, now):
             return
+        if await self._spotify_flow(original, raw, cmd, now):
+            return
         if await self._reminder_flow(raw, cmd, now):
             return
 
@@ -456,6 +461,67 @@ class Brain:
                     await self.process(st, source="macro")
         finally:
             self.macro_depth -= 1
+
+    # ---------- Spotify: найти и включить трек ----------
+
+    async def _spotify_flow(self, original, raw, cmd, now):
+        words = cmd.split()
+        about = "спотиф" in cmd or "spotify" in cmd
+
+        # ждём Client ID, который человек вставит в чат
+        if self.pending_spotify and now < self.pending_spotify:
+            m = spotify.CLIENT_ID_RE.search(original)
+            if m:
+                self.pending_spotify = 0.0
+                self.spotify.set_client_id(m.group(0))
+                asyncio.create_task(self._spotify_auth())
+                return True
+            if any(w in CANCEL_WORDS for w in words) or "не надо" in cmd:
+                self.pending_spotify = 0.0
+                await self.say("Хорошо, Spotify не подключаю.")
+                return True
+
+        if about and any(w.startswith(("подключ", "привяж", "войди", "залогин")) for w in words):
+            m = spotify.CLIENT_ID_RE.search(original)
+            if m:
+                self.spotify.set_client_id(m.group(0))
+            if self.spotify.client_id:
+                asyncio.create_task(self._spotify_auth())
+            else:
+                self.pending_spotify = now + 300
+                await self.say("Вставь сюда, в чат, Client ID своего приложения со страницы developer.spotify.com "
+                               "(Settings → Basic Information).", duration=9.0)
+            return True
+        if about and any(w.startswith(("отключ", "отвяж", "забудь", "выйди")) for w in words):
+            self.spotify.forget()
+            await self.say("Отключила Spotify. Чтобы вернуть — скажи «подключи Spotify».")
+            return True
+
+        query = spotify.parse_request(raw)
+        if not query:
+            return False
+        if not self.spotify.connected:
+            await self.say("Чтобы включать треки, сначала подключи Spotify — скажи «подключи Spotify».")
+            return True
+        try:
+            found = await asyncio.to_thread(self.spotify.search, query)
+            if not found:
+                await self.say(f"Не нашла в Spotify трек «{query}».")
+                return True
+            print(f"[spotify] «{query}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
+            await asyncio.to_thread(self.spotify.play, found["uri"])
+            await self.say(f"Включаю {found['name']} — {found['artists']}.")
+        except spotify.SpotifyError as e:
+            await self.say(str(e))
+        return True
+
+    async def _spotify_auth(self):
+        await self.say("Открываю страницу Spotify — нажми там «Принять» (Agree).", duration=6.0)
+        try:
+            await asyncio.to_thread(self.spotify.authorize)
+            await self.say("Spotify подключён! Попробуй: «включи песню …» и название с исполнителем.", duration=7.0)
+        except spotify.SpotifyError as e:
+            await self.say(str(e), duration=7.0)
 
     # ---------- напоминания и таймеры ----------
 

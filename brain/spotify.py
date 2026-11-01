@@ -1,0 +1,263 @@
+"""Spotify: найти трек по названию/исполнителю и включить его (нужен Spotify Premium).
+
+Подключение один раз: «Вероника, подключи Spotify» → вставить Client ID приложения из
+developer.spotify.com (Redirect URI: http://127.0.0.1:8766/callback) → в браузере нажать «Принять».
+Вход — по схеме PKCE: секретный ключ приложения не нужен, пароль от Spotify сюда не попадает.
+Токены хранятся в spotify.json рядом с мозгом (обновление их не трогает).
+"""
+import base64
+import hashlib
+import http.server
+import json
+import os
+import re
+import secrets
+import socketserver
+import threading
+import time
+import urllib.parse
+import webbrowser
+
+import requests
+from rapidfuzz import fuzz
+
+from paths import path
+
+FILE = path("spotify.json")
+PORT = 8766
+REDIRECT = f"http://127.0.0.1:{PORT}/callback"
+SCOPES = "user-modify-playback-state user-read-playback-state"
+API = "https://api.spotify.com/v1"
+CLIENT_ID_RE = re.compile(r"\b[0-9a-fA-F]{32}\b")
+
+
+class SpotifyError(Exception):
+    """Ошибка с готовой фразой для облачка."""
+
+
+class Spotify:
+    def __init__(self):
+        self.data = {}
+        self.load()
+
+    # ---------- хранение ----------
+
+    def load(self):
+        try:
+            with open(FILE, "r", encoding="utf-8") as f:
+                self.data = json.load(f)
+        except (OSError, ValueError):
+            self.data = {}
+
+    def save(self):
+        try:
+            with open(FILE, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=2)
+        except OSError:
+            pass
+
+    @property
+    def client_id(self):
+        return self.data.get("client_id", "")
+
+    @property
+    def connected(self):
+        return bool(self.client_id and self.data.get("refresh_token"))
+
+    def set_client_id(self, cid):
+        self.data = {"client_id": cid.strip().lower()}
+        self.save()
+
+    def forget(self):
+        self.data = {"client_id": self.client_id} if self.client_id else {}
+        self.save()
+
+    # ---------- вход (PKCE) ----------
+
+    def authorize(self, timeout=300):
+        """Открывает страницу Spotify и ждёт, пока человек нажмёт «Принять». Блокирует (до timeout сек)."""
+        if not self.client_id:
+            raise SpotifyError("Сначала нужен Client ID.")
+        verifier = secrets.token_urlsafe(64)[:96]
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+        state = secrets.token_urlsafe(16)
+        result = {}
+        done = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if not self.path.startswith("/callback"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                ok = q.get("state", [""])[0] == state and "code" in q
+                result["code"] = q.get("code", [""])[0] if ok else ""
+                result["error"] = q.get("error", [""])[0] if not ok else ""
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                msg = ("Готово! Spotify подключён к VERONIKA. Вкладку можно закрыть." if ok
+                       else "Не получилось подключить Spotify. Вкладку можно закрыть и попробовать ещё раз.")
+                self.wfile.write(f"<html><body style='font-family:sans-serif;background:#1b0d22;color:#ffd6ec;"
+                                 f"display:flex;align-items:center;justify-content:center;height:90vh'>"
+                                 f"<h2>{msg}</h2></body></html>".encode("utf-8"))
+                done.set()
+
+            def log_message(self, *args):
+                pass
+
+        try:
+            server = socketserver.TCPServer(("127.0.0.1", PORT), Handler)
+        except OSError:
+            raise SpotifyError(f"Порт {PORT} занят — не могу дождаться ответа Spotify.")
+        server.timeout = 0.5
+        url = "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode({
+            "client_id": self.client_id, "response_type": "code", "redirect_uri": REDIRECT,
+            "code_challenge_method": "S256", "code_challenge": challenge, "scope": SCOPES, "state": state,
+        })
+        webbrowser.open(url)
+        deadline = time.time() + timeout
+        try:
+            while not done.is_set() and time.time() < deadline:
+                server.handle_request()
+        finally:
+            server.server_close()
+        if not result.get("code"):
+            if result.get("error") == "access_denied":
+                raise SpotifyError("Ты не разрешил доступ — Spotify не подключён.")
+            if not done.is_set():
+                raise SpotifyError("Не дождалась ответа от Spotify. Скажи «подключи Spotify» ещё раз.")
+            raise SpotifyError("Spotify не пустил. Проверь Redirect URI и что твоя почта есть в User Management.")
+        r = requests.post("https://accounts.spotify.com/api/token", data={
+            "grant_type": "authorization_code", "code": result["code"], "redirect_uri": REDIRECT,
+            "client_id": self.client_id, "code_verifier": verifier,
+        }, timeout=15)
+        if r.status_code != 200:
+            raise SpotifyError(f"Spotify не выдал доступ ({r.status_code}). Проверь Client ID и Redirect URI.")
+        self._store_tokens(r.json())
+
+    def _store_tokens(self, tok):
+        self.data["access_token"] = tok["access_token"]
+        self.data["expires"] = time.time() + int(tok.get("expires_in", 3600)) - 60
+        if tok.get("refresh_token"):
+            self.data["refresh_token"] = tok["refresh_token"]
+        self.save()
+
+    def _token(self):
+        if not self.connected:
+            raise SpotifyError("Spotify ещё не подключён. Скажи «подключи Spotify».")
+        if time.time() < self.data.get("expires", 0) and self.data.get("access_token"):
+            return self.data["access_token"]
+        r = requests.post("https://accounts.spotify.com/api/token", data={
+            "grant_type": "refresh_token", "refresh_token": self.data["refresh_token"], "client_id": self.client_id,
+        }, timeout=15)
+        if r.status_code != 200:
+            self.forget()
+            raise SpotifyError("Доступ к Spotify истёк. Скажи «подключи Spotify» ещё раз.")
+        self._store_tokens(r.json())
+        return self.data["access_token"]
+
+    def _api(self, method, url, **kw):
+        try:
+            r = requests.request(method, API + url, headers={"Authorization": f"Bearer {self._token()}"},
+                                 timeout=15, **kw)
+        except requests.RequestException:
+            raise SpotifyError("Не достучалась до Spotify — нет интернета?")
+        if r.status_code == 401:            # токен протух раньше срока
+            self.data["expires"] = 0
+            r = requests.request(method, API + url, headers={"Authorization": f"Bearer {self._token()}"},
+                                 timeout=15, **kw)
+        return r
+
+    # ---------- поиск ----------
+
+    def search(self, query):
+        """Лучший трек по запросу или None. Возвращает dict(uri, name, artists, score)."""
+        from apps import translit
+        tries = [query]
+        lat = translit(query)
+        if lat != query:
+            tries.append(lat)                 # «линкин парк намб» -> «linkin park namb»
+        best = None
+        for q in tries:
+            r = self._api("GET", "/search", params={"q": q, "type": "track", "limit": 10, "market": "from_token"})
+            if r.status_code == 403:
+                raise SpotifyError("Spotify не пускает: добавь свою почту в User Management приложения.")
+            if r.status_code != 200:
+                raise SpotifyError(f"Spotify ответил ошибкой ({r.status_code}).")
+            items = r.json().get("tracks", {}).get("items", [])
+            for rank, t in enumerate(items):
+                artists = ", ".join(a["name"] for a in t.get("artists", []))
+                full = f"{t['name']} {artists}".lower()
+                score = max(fuzz.token_set_ratio(q, full), fuzz.token_set_ratio(lat, translit(full)),
+                            fuzz.partial_ratio(q, t["name"].lower()))
+                score -= rank * 1.5             # порядок Spotify тоже важен
+                if best is None or score > best["score"]:
+                    best = {"uri": t["uri"], "name": t["name"], "artists": artists, "score": score}
+            if best and best["score"] >= 85:
+                break
+        return best if best and best["score"] >= 55 else None
+
+    # ---------- воспроизведение ----------
+
+    def _devices(self):
+        r = self._api("GET", "/me/player/devices")
+        return r.json().get("devices", []) if r.status_code == 200 else []
+
+    def play(self, uri):
+        r = self._api("PUT", "/me/player/play", json={"uris": [uri]})
+        if r.status_code in (200, 202, 204):
+            return
+        reason = ""
+        try:
+            reason = r.json().get("error", {}).get("reason", "")
+        except ValueError:
+            pass
+        if r.status_code == 403 and reason == "PREMIUM_REQUIRED":
+            raise SpotifyError("Spotify разрешает включать треки только с Premium.")
+        if r.status_code != 404 and reason != "NO_ACTIVE_DEVICE":
+            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}).")
+        # нет активного устройства: ищем этот ПК, при необходимости запускаем Spotify
+        devices = self._devices()
+        if not devices:
+            try:
+                os.startfile("spotify:")      # type: ignore[attr-defined]
+            except (OSError, AttributeError):
+                raise SpotifyError("Spotify не запущен, и я не смогла его открыть.")
+            for _ in range(20):
+                time.sleep(0.75)
+                devices = self._devices()
+                if devices:
+                    break
+        if not devices:
+            raise SpotifyError("Не вижу Spotify. Открой его — и повтори.")
+        dev = next((d for d in devices if d.get("type") == "Computer"), devices[0])
+        r = self._api("PUT", f"/me/player/play?device_id={dev['id']}", json={"uris": [uri]})
+        if r.status_code not in (200, 202, 204):
+            raise SpotifyError(f"Spotify не смог включить трек ({r.status_code}).")
+
+
+# ---------- разбор фразы ----------
+
+PLAY_RE = re.compile(
+    r"(?:включи|поставь|найди|запусти|сыграй|играй|врубай|вруби)\s+(?:мне\s+)?"
+    r"(?:песню|трек|композицию|песенку)\s+(?P<q>.+)$")
+SPOTIFY_RE = re.compile(
+    r"(?:включи|поставь|найди|запусти|сыграй|вруби)\s+(?:мне\s+)?(?P<q>.+?)\s+(?:в|на|из)\s+спот[иы]ф\w*$")
+NOT_QUERY = {"на паузу", "дальше", "следующую", "другую", "предыдущую", "заново", "погромче", "потише"}
+
+
+def parse_request(text):
+    """«включи песню numb linkin park» -> «numb linkin park». None — это не просьба найти трек."""
+    t = text.lower().strip(" .!?")
+    m = PLAY_RE.search(t) or SPOTIFY_RE.search(t)
+    if not m:
+        return None
+    q = m.group("q").strip(" .,!?«»\"")
+    q = re.sub(r"^(?:под названием|называется)\s+", "", q)
+    q = re.sub(r"\s+(?:от|исполнителя|группы|исполнитель|в исполнении)\s+", " ", q)
+    q = re.sub(r"\s+(?:в|на|из)\s+спот[иы]ф\w*$", "", q)
+    if len(q) < 2 or q in NOT_QUERY:
+        return None
+    return q
