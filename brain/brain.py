@@ -25,6 +25,7 @@ from voice import VoiceListener
 import windows_info
 import music
 import filesearch
+import websearch
 import reminders
 import spotify
 import usercmds
@@ -114,6 +115,7 @@ class Brain:
         self.macro_depth = 0           # своя команда вызывает другие — защита от зацикливания
         self.spotify = spotify.Spotify()
         self.pending_spotify = 0.0     # до этого времени ждём Client ID в чате
+        self.search = None             # {"query", "items", "until"} — открыто окошко со ссылками
 
     # ---------- связь с персонажем ----------
 
@@ -208,6 +210,8 @@ class Brain:
                 st["sensitivity"] = int(msg.get("sensitivity", st["sensitivity"]))
                 st["ptt_key"] = str(msg.get("ptt_key", st["ptt_key"]))
                 voice.save_state(st)
+        elif kind == "search_closed":
+            self.search = None         # окошко закрыли кликом/крестиком/по времени
         elif kind == "voice_calibrate":
             lst = getattr(self, "listener", None)
             if lst is None or not lst.ready:
@@ -324,6 +328,14 @@ class Brain:
                     await self.say("Хорошо, ничего не делаю.")
                     return
 
+        # выбор ссылки из окошка поиска: «открой вторую», «закрой поиск»
+        if self.search and now < self.search["until"] and await self._search_pick(cmd):
+            return
+        if websearch.parse_pick(cmd) is not None and cmd.split()[0].startswith(("откр", "выбер")):
+            # «открой вторую», а списка ссылок уже нет — не пытаемся запустить программу «вторую»
+            await self.say("Списка ссылок сейчас нет. Скажи «загугли …» — и выбери из нового.")
+            return
+
         # свои команды («запомни команду …») и напоминания («напомни через …», «таймер на …»)
         raw = " ".join(w for w in text.split() if not self._is_alias(w))
         raw_orig = " ".join(w for w in original.split() if not self._is_alias(w.lower()))
@@ -332,6 +344,8 @@ class Brain:
         if await self._spotify_flow(original, raw, cmd, now):
             return
         if await self._file_flow(raw, now):
+            return
+        if await self._web_flow(original_noalias(original, self), now):
             return
         if await self._reminder_flow(raw, cmd, now):
             return
@@ -520,6 +534,54 @@ class Brain:
                 await self.say(str(e2))
         except spotify.SpotifyError as e:
             await self.say(str(e))
+        return True
+
+    # ---------- поиск в интернете ----------
+
+    async def _web_flow(self, text, now):
+        query = websearch.parse_request(text)
+        if not query:
+            return False
+        items = await asyncio.to_thread(websearch.results, query)
+        print(f"[поиск] «{query}»: {[(i['site'], i['title'][:40]) for i in items]}")
+        if not items:
+            # список прочитать не вышло — просто открываем Google
+            await asyncio.to_thread(webbrowser.open, websearch.google_url(query))
+            await self.say(f"Открыла Google: «{query}».")
+            return True
+        self.search = {"query": query, "items": items, "until": now + 90}
+        await self.broadcast({"type": "search_results", "query": query, "items": items})
+        await self.say(f"Нашла {len(items)} ссылок. Скажи «открой первую» — или кликни.", duration=5.0)
+        return True
+
+    async def _search_pick(self, cmd):
+        words = cmd.split()
+        if words and words[0].startswith(("закр", "убер", "скрой", "спрячь")) and \
+                any(w.startswith(("поиск", "ссылк", "список", "результат", "окн")) for w in words):
+            self.search = None
+            await self.broadcast({"type": "search_close"})
+            await self.say("Закрыла.")
+            return True
+        if "гугл" in cmd or "google" in cmd:
+            if any(w.startswith(("откр", "покажи", "перейди")) for w in words) or cmd in ("гугл", "google"):
+                q = self.search["query"]
+                self.search = None
+                await self.broadcast({"type": "search_close"})
+                await asyncio.to_thread(webbrowser.open, websearch.google_url(q))
+                await self.say("Открываю в Google.")
+                return True
+        idx = websearch.parse_pick(cmd)
+        if idx is None:
+            return False
+        items = self.search["items"]
+        if idx >= len(items):
+            await self.say(f"Там всего {len(items)} ссылок.")
+            return True
+        item = items[idx]
+        self.search = None
+        await self.broadcast({"type": "search_close"})
+        await asyncio.to_thread(webbrowser.open, item["url"])
+        await self.say(f"Открываю: {item['title']}")
         return True
 
     # ---------- поиск файлов ----------
@@ -957,6 +1019,11 @@ class Brain:
             rem_task.cancel()
             if listener:
                 listener.stop(wait=False)
+
+
+def original_noalias(original, brain):
+    """Фраза как написана (с заглавными), но без обращения «Вероника»."""
+    return " ".join(w for w in original.split() if not brain._is_alias(w.lower())).strip(" ,")
 
 
 def text_words(text):

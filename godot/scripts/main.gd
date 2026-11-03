@@ -22,6 +22,13 @@ var _pt_timer := 0.0
 var _menu: PopupMenu
 var _chat_window: Window
 var _chat_input: LineEdit
+var _search_window: Window      # окошко со ссылками после «загугли …»
+var _search_list: VBoxContainer
+var _search_box: VBoxContainer
+var _search_title: Label
+var _search_items: Array = []
+var _search_query := ""
+var _search_timer: SceneTreeTimer
 var _stats := {}
 var _talk_left := 0.0
 var _settings := ConfigFile.new()
@@ -116,6 +123,7 @@ func _ready() -> void:
 	_restore_position()
 	_build_menu()
 	_build_chat_window()
+	_build_search_window()
 	brain.message_received.connect(_on_brain_message)
 	brain.connection_changed.connect(_on_brain_connection)
 	_start_brain_if_bundled()
@@ -739,6 +747,117 @@ func _build_chat_window() -> void:
 	add_child(_chat_window)
 
 
+# ---------- результаты поиска ----------
+
+func _build_search_window() -> void:
+	_search_window = Window.new()
+	_search_window.title = "Поиск"
+	_search_window.size = Vector2i(440, 320)
+	_search_window.unresizable = true
+	_search_window.always_on_top = true
+	_search_window.visible = false
+	_search_window.close_requested.connect(_close_search.bind(true))
+
+	var bg := Panel.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_search_window.add_child(bg)
+
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_FULL_RECT)
+	box.offset_left = 10
+	box.offset_right = -10
+	box.offset_top = 8
+	box.offset_bottom = -8
+	box.add_theme_constant_override("separation", 4)
+	_search_window.add_child(box)
+	_search_box = box
+
+	_search_title = Label.new()
+	_search_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_search_title.add_theme_color_override("font_color", Color(1.0, 0.55, 0.78))
+	box.add_child(_search_title)
+
+	_search_list = VBoxContainer.new()
+	_search_list.add_theme_constant_override("separation", 3)
+	_search_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(_search_list)
+
+	var row := HBoxContainer.new()
+	var google := Button.new()
+	google.text = "Открыть всё в Google"
+	google.pressed.connect(func():
+		OS.shell_open("https://www.google.com/search?q=" + _search_query.uri_encode())
+		_close_search(true))
+	row.add_child(google)
+	var hint := Label.new()
+	hint.text = "  или скажи «открой вторую»"
+	hint.modulate.a = 0.6
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(hint)
+	box.add_child(row)
+	add_child(_search_window)
+
+
+func _show_search(query: String, items: Array) -> void:
+	_search_query = query
+	_search_items = items
+	_search_title.text = "Поиск: " + query
+	for c in _search_list.get_children():
+		c.queue_free()
+	for i in items.size():
+		var it: Dictionary = items[i]
+		var b := Button.new()
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		b.clip_text = true
+		b.custom_minimum_size = Vector2(0, 44)
+		b.text = "%d.  %s\n      %s" % [i + 1, String(it.get("title", "")), String(it.get("site", ""))]
+		b.tooltip_text = String(it.get("snippet", ""))
+		b.pressed.connect(_pick_search.bind(i))
+		_search_list.add_child(b)
+	_search_window.size = Vector2i(440, 112 + 48 * items.size())
+	# рядом с ней: слева, если есть место, иначе справа; на уровне головы
+	var wpos := DisplayServer.window_get_position()
+	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	var m := character.pose_metrics(camera)
+	var bbox: Rect2 = m["bbox"] if not m.is_empty() else Rect2(Vector2(140, 100), Vector2(240, 480))
+	var x := wpos.x + int(bbox.position.x) - _search_window.size.x - 10
+	if x < scr.position.x:
+		x = wpos.x + int(bbox.end.x) + 10
+	var y := wpos.y + int(bbox.position.y)
+	x = clampi(x, scr.position.x, scr.end.x - _search_window.size.x)
+	y = clampi(y, scr.position.y + 30, scr.end.y - _search_window.size.y - 10)
+	_search_window.position = Vector2i(x, y)
+	_search_window.show()
+	glitch_pulse(0.3, 0.15)
+	# точная высота — по содержимому, когда оно разложится
+	await get_tree().process_frame
+	var need := int(_search_box.get_combined_minimum_size().y) + 18
+	if need > _search_window.size.y:
+		_search_window.size = Vector2i(_search_window.size.x, need)
+	_search_timer = get_tree().create_timer(90.0)
+	var t := _search_timer
+	t.timeout.connect(func():
+		if t == _search_timer:
+			_close_search(true))
+
+
+func _pick_search(i: int) -> void:
+	if i < _search_items.size():
+		OS.shell_open(String(_search_items[i].get("url", "")))
+		say("Открываю: " + String(_search_items[i].get("title", "")), 3.0)
+	_close_search(true)
+
+
+## tell_brain — сообщить мозгу, что список закрыт (кликом/крестиком/по времени), чтобы «открой вторую» больше не ловилось.
+func _close_search(tell_brain := false) -> void:
+	_search_timer = null
+	if _search_window.visible:
+		_search_window.hide()
+	if tell_brain and brain.connected:
+		brain.send({"type": "search_closed"})
+
+
 func _open_chat() -> void:
 	var wpos := DisplayServer.window_get_position()
 	var pos := wpos + Vector2i(int((window_size.x - _chat_window.size.x) * 0.5), int(window_size.y * 0.55))
@@ -1073,6 +1192,10 @@ func _on_brain_message(msg: Dictionary) -> void:
 			elif character.current_pose == character.idle_animation:
 				# разовые анимации (alarm и т.п.) — только когда стоит, а не сидит/лежит
 				character.play(anim_name)
+		"search_results":
+			_show_search(String(msg.get("query", "")), msg.get("items", []))
+		"search_close":
+			_close_search(false)
 		"listening":
 			var was := _listen_state
 			_listen_state = String(msg.get("state", "idle"))
