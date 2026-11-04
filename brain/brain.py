@@ -28,6 +28,7 @@ import filesearch
 import websearch
 import reminders
 import spotify
+import spotify_ui
 import usercmds
 
 from paths import BASE_DIR
@@ -519,9 +520,6 @@ class Brain:
         req = spotify.parse_request(raw)
         if not req:
             return False
-        if not self.spotify.connected:
-            await self.say("Чтобы включать музыку, сначала подключи Spotify — скажи «подключи Spotify».")
-            return True
         try:
             await self._spotify_do(req)
         except spotify.NeedReauth as e:
@@ -621,50 +619,126 @@ class Brain:
             await self.say(f"Не получилось открыть {name}: {e}")
 
     async def _spotify_do(self, req):
+        """Spotify «руками»: открыть страницу в приложении и нажать Play (см. spotify_ui).
+        Веб-API (если подключён) помогает точно найти трек/плейлист и служит запасным путём."""
         sp, kind = self.spotify, req["kind"]
-        check = self._media_now
+        check, api = self._media_now, sp.connected
+
+        async def ui(action, want=""):
+            try:
+                ok, _title = await asyncio.to_thread(spotify_ui.run_and_verify, action, want, check, spotify._norm)
+                return ok
+            except spotify_ui.UIError as e:
+                print(f"[spotify-ui] {e}")
+                return False
+            except Exception as e:  # noqa: BLE001 — UI Automation ломаться не должна, но всё же
+                print(f"[spotify-ui] ошибка: {e!r}")
+                return False
+
+        def shuffle_first(on):
+            if on is None:
+                return
+            try:
+                spotify_ui.ensure_running()
+                done = spotify_ui.set_shuffle(on)
+            except Exception as e:  # noqa: BLE001
+                print(f"[spotify-ui] перемешивание: {e!r}")
+                done = False
+            if not done and api:
+                try:
+                    sp.set_shuffle(on)
+                except spotify.SpotifyError:
+                    pass
+
         if kind == "shuffle":
-            await asyncio.to_thread(sp.set_shuffle, req["on"])
-            await self.say("Перемешиваю." if req["on"] else "Играю по порядку.")
+            done = await asyncio.to_thread(spotify_ui.set_shuffle, req["on"])
+            if not done and api:
+                await asyncio.to_thread(sp.set_shuffle, req["on"])
+                done = True
+            await self.say(("Перемешиваю." if req["on"] else "Играю по порядку.") if done
+                           else "Не нашла кнопку перемешивания — Spotify открыт?")
             return
+        mix = True if req.get("shuffle") else None
+
         if kind == "liked":
+            await asyncio.to_thread(shuffle_first, mix)
+            if await ui(lambda: spotify_ui.play_page("spotify:collection:tracks")):
+                await self.say("Включаю твои любимые треки" + (" вперемешку." if mix else "."))
+                return
+            if not api:
+                await self.say("Открыла «Любимые треки», но включить не вышло — нажми Play.")
+                return
             uris = await asyncio.to_thread(sp.liked_tracks)
             if not uris:
                 await self.say("Не нашла твоих любимых треков в Spotify.")
                 return
-            if req["shuffle"]:
+            if mix:
                 random.shuffle(uris)
             await asyncio.to_thread(sp.play_uris, uris, check)
-            await self.say("Включаю твои любимые треки" + (" вперемешку." if req["shuffle"] else "."))
+            await self.say("Включаю твои любимые треки" + (" вперемешку." if mix else "."))
             return
+
         if kind in ("playlist", "track_in_playlist"):
-            pl = await asyncio.to_thread(sp.find_playlist, req["playlist"])
-            if not pl:
-                await self.say(f"Не нашла у тебя плейлист «{req['playlist']}».")
-                return
+            pl = None
+            if api:
+                try:
+                    pl = await asyncio.to_thread(sp.find_playlist, req["playlist"])
+                except spotify.NeedReauth:
+                    raise
+                except spotify.SpotifyError as e:
+                    print(f"[spotify] плейлисты через API: {e}")
             if kind == "playlist":
-                await asyncio.to_thread(sp.play_context, pl["uri"], check, "", "", True if req["shuffle"] else None)
-                await self.say(f"Включаю плейлист «{pl['name']}»" + (" вперемешку." if req["shuffle"] else "."))
+                await asyncio.to_thread(shuffle_first, mix)
+                name = pl["name"] if pl else req["playlist"]
+                if pl:
+                    ok = await ui(lambda: spotify_ui.play_page(pl["uri"]))
+                else:
+                    ok = await ui(lambda: spotify_ui.play_search(req["playlist"]))
+                if ok:
+                    await self.say(f"Включаю плейлист «{name}»" + (" вперемешку." if mix else "."))
+                    return
+                if pl:
+                    await asyncio.to_thread(sp.play_context, pl["uri"], check, "", "", mix)
+                    await self.say(f"Включаю плейлист «{name}»" + (" вперемешку." if mix else "."))
+                    return
+                await self.say(f"Не получилось включить плейлист «{name}». Открыла поиск в Spotify.")
                 return
-            tracks = await asyncio.to_thread(sp.playlist_tracks, pl["id"])
-            t = sp.find_in_playlist(tracks, req["q"]) if tracks else None
-            if t:
-                await asyncio.to_thread(sp.play_context, pl["uri"], check, t["uri"], t["name"])
-                await self.say(f"Включаю {t['name']} — {t['artists']} из «{pl['name']}».")
-                return
-            if not tracks:
-                await self.say(f"В плейлист «{pl['name']}» Spotify заглянуть не даёт (он не твой) — "
-                               "включаю трек отдельно.")
-            else:
-                await self.say(f"В «{pl['name']}» нет «{req['q']}» — ищу во всём Spotify.")
+            # трек из плейлиста — нужен список треков, это умеет только API
+            if pl:
+                tracks = await asyncio.to_thread(sp.playlist_tracks, pl["id"])
+                t = sp.find_in_playlist(tracks, req["q"]) if tracks else None
+                if t:
+                    await asyncio.to_thread(sp.play_context, pl["uri"], check, t["uri"], t["name"])
+                    await self.say(f"Включаю {t['name']} — {t['artists']} из «{pl['name']}».")
+                    return
             req = {"kind": "track", "q": req["q"]}
-        found = await asyncio.to_thread(sp.search, req["q"])
-        if not found:
-            await self.say(f"Не нашла в Spotify трек «{req['q']}».")
+
+        # трек
+        found = None
+        if api:
+            try:
+                found = await asyncio.to_thread(sp.search, req["q"])
+            except spotify.SpotifyError as e:
+                print(f"[spotify] поиск через API не удался: {e}")
+        if found:
+            print(f"[spotify] «{req['q']}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
+            if await ui(lambda: spotify_ui.play_page(found["uri"]), found["name"]):
+                await self.say(f"Включаю {found['name']} — {found['artists']}.")
+                return
+            try:
+                await asyncio.to_thread(sp.play, found["uri"], found["name"], check)
+                await self.say(f"Включаю {found['name']} — {found['artists']}.")
+                return
+            except spotify.SpotifyError as e:
+                print(f"[spotify] API тоже не смог: {e}")
+        picked = {}
+
+        def by_search():
+            picked["name"] = spotify_ui.play_search(req["q"])
+        if await ui(by_search):
+            await self.say(f"Включаю {picked.get('name') or req['q']}.")
             return
-        print(f"[spotify] «{req['q']}» -> {found['name']} — {found['artists']} ({found['score']:.0f})")
-        await asyncio.to_thread(sp.play, found["uri"], found["name"], check)
-        await self.say(f"Включаю {found['name']} — {found['artists']}.")
+        await self.say(f"Не получилось включить «{req['q']}» — открыла поиск в Spotify, нажми Play.")
 
     def _media_now(self):
         """Что реально играет сейчас по данным Windows: (играет ли, название). Из потока Spotify."""
