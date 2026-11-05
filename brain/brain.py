@@ -624,7 +624,7 @@ class Brain:
             if any(w in self.cfg["yes_words"] for w in words):
                 try:
                     if req["messenger"] == "telegram":
-                        await asyncio.to_thread(messenger.send_telegram_approved, req["text"])
+                        await asyncio.to_thread(messenger.send_telegram_approved, req["title"], req["text"])
                         self.contacts.titles["tg:" + req["target"].lower().lstrip("@")] = req["chat"]
                         self.contacts.save()
                         await self.say(f"Отправила в Telegram ({req['chat']}).")
@@ -668,15 +668,14 @@ class Brain:
         names = [n for n in (c.get("name", ""), c.get("discord_title", ""), req["who"],
                              self.contacts.titles.get((req["target"] or "").lower(), "")) if n]
         try:
-            verified = bool(self.contacts.titles.get("tg:" + (req["target"] or "").lower().lstrip("@")))
-            await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names, verified)
+            known = self.contacts.titles.get("tg:" + (req["target"] or "").lower().lstrip("@"), "")
+            await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names, known)
             await self.say(f"Отправила в {name} ({who}).")
         except messenger.NeedApproval as e:
             req["title"], req["chat"] = e.title, e.chat
             self.pending_msg = (req, time.time() + 30, "approve_chat")
             if e.messenger == "telegram":
-                await self.say(f"Открыла в Telegram чат {e.chat} — проверь, тот ли это человек. Скажи «да» — отправлю.",
-                               duration=8.0)
+                await self.say(f"Открыла в Telegram чат «{e.chat}». Это {who}? Скажи «да» — отправлю.", duration=8.0)
             else:
                 await self.say(f"Открыла в {name} чат «{e.chat}». Это {who}? Скажи «да» — отправлю.", duration=8.0)
         except messenger.SendError as e:

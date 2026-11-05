@@ -446,10 +446,43 @@ def telegram_url(target):
     return "https://web.telegram.org/a/#?tgaddr=" + urllib.parse.quote(addr, safe="")
 
 
+_tg_hwnd = 0        # окно браузера, где последний раз открывали Telegram
+
+
+def _browser_windows():
+    out = []
+    for exe in ("chrome", "msedge", "firefox", "opera", "browser", "yandex"):
+        out += [h for h in _windows_of(exe) if _user32().IsWindowVisible(h)]
+    return out
+
+
+def tab_name(title):
+    """«Влад - Google Chrome» -> «Влад»; «(3) Telegram - Google Chrome» -> «Telegram»."""
+    t = re.sub(r"\s+[-–—]\s+(?:Google Chrome|Microsoft\u200b? Edge|Mozilla Firefox|Opera|Яндекс Браузер|Yandex)\s*$",
+               "", title or "")
+    return re.sub(r"^\(\d+\)\s*", "", t).strip()
+
+
+def _has_composer(hwnd):
+    try:
+        import spotify_ui
+        uia, U = spotify_ui._automation()
+        cond = uia.CreatePropertyCondition(U.UIA_AutomationIdPropertyId, TG_COMPOSER_ID)
+        return bool(uia.ElementFromHandle(hwnd).FindFirst(U.TreeScope_Descendants, cond))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _telegram_window():
-    for hwnd in _windows_of("chrome") + _windows_of("msedge") + _windows_of("firefox") + _windows_of("opera") \
-            + _windows_of("browser") + _windows_of("yandex"):
-        if _user32().IsWindowVisible(hwnd) and _title(hwnd).lower().lstrip("(0123456789) ").startswith("telegram"):
+    """Окно браузера, где сейчас открыта вкладка Telegram (вкладка называется «Telegram» или именем чата)."""
+    wins = _browser_windows()
+    for hwnd in wins:
+        if tab_name(_title(hwnd)).lower().startswith("telegram"):
+            return hwnd
+    if _tg_hwnd in wins and _has_composer(_tg_hwnd):
+        return _tg_hwnd
+    for hwnd in wins:
+        if _has_composer(hwnd):
             return hwnd
     return None
 
@@ -479,6 +512,7 @@ def _focus_composer(hwnd, wait=12.0):
 
 def open_telegram_chat(target):
     """Открыть чат по нику/номеру в Telegram Web. Возвращает окно браузера."""
+    global _tg_hwnd
     url = telegram_url(target)
     hwnd = _telegram_window()
     old_clip = None
@@ -519,6 +553,7 @@ def open_telegram_chat(target):
             except Exception:  # noqa: BLE001
                 pass
     time.sleep(2.0)
+    _tg_hwnd = hwnd
     return hwnd
 
 
@@ -543,7 +578,8 @@ def _telegram_type(hwnd, text):
                 pass
 
 
-def send_telegram(target, text, verified=False):
+def send_telegram(target, text, names=(), known=""):
+    """known — имя чата, которое человек уже подтверждал для этого ника."""
     if not IS_WINDOWS:
         raise SendError("Отправка работает только на Windows.")
     if not target:
@@ -552,24 +588,34 @@ def send_telegram(target, text, verified=False):
     if not _focus_composer(hwnd):
         raise SendError(f"Telegram не открыл чат с {target} (ник верный? вход в web.telegram.org выполнен?) — "
                         "ничего не отправила.")
-    if not verified:
-        # заголовок вкладки всегда «Telegram» — проверить чат по нему нельзя, поэтому в первый раз спрашиваем
-        raise NeedApproval(_title(hwnd), "@" + target.lstrip("@"), "telegram")
+    # вкладка называется именем открытого чата — ждём, пока Telegram его подставит
+    name = ""
+    for _ in range(8):
+        name = tab_name(_title(hwnd))
+        if name and not name.lower().startswith("telegram"):
+            break
+        time.sleep(0.4)
+    print(f"[сообщения] Telegram: вкладка «{name}» (ищу {target!r}, раньше было {known!r})")
+    if not ((known and _norm(name) == _norm(known)) or _title_has(name, [target, *names])):
+        raise NeedApproval(_title(hwnd), name if name and not name.lower().startswith("telegram")
+                           else "@" + target.lstrip("@"), "telegram")
     _telegram_type(hwnd, text)
     print(f"[сообщения] Telegram: отправлено {target}: {text!r}")
 
 
-def send_telegram_approved(text):
+def send_telegram_approved(title, text):
     hwnd = _telegram_window()
     if not hwnd:
-        raise SendError("Вкладка Telegram закрылась — ничего не отправила.")
+        raise SendError("Не нашла вкладку Telegram — ничего не отправила.")
+    if _title(hwnd) != title:
+        raise SendError(f"В Telegram уже открыт другой чат («{tab_name(_title(hwnd))}») — ничего не отправила.")
     _telegram_type(hwnd, text)
     print(f"[сообщения] Telegram: отправлено после подтверждения: {text!r}")
 
 
-def send(messenger, target, text, names=(), verified=False):
+def send(messenger, target, text, names=(), known=""):
     if messenger == "discord":
         return send_discord(target, text, names)
     if messenger == "telegram":
-        return send_telegram(target, text, verified)
+        return send_telegram(target, text, names, known)
     raise SendError(f"{NAMES.get(messenger, messenger)} пока не умею — сначала Discord и Telegram, WhatsApp следующим.")
