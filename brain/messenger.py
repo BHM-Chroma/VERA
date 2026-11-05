@@ -70,19 +70,22 @@ def name_matches(word, name):
 class Contacts:
     def __init__(self):
         self.items = []
+        self.titles = {}      # ник Discord -> как чат называется в окне (запоминается после «да»)
         self.load()
 
     def load(self):
         try:
             with open(FILE, "r", encoding="utf-8") as f:
-                self.items = json.load(f).get("contacts", [])
+                data = json.load(f)
+            self.items = data.get("contacts", [])
+            self.titles = data.get("discord_titles", {})
         except (OSError, ValueError):
-            self.items = []
+            self.items, self.titles = [], {}
 
     def save(self):
         try:
             with open(FILE, "w", encoding="utf-8") as f:
-                json.dump({"contacts": self.items}, f, ensure_ascii=False, indent=2)
+                json.dump({"contacts": self.items, "discord_titles": self.titles}, f, ensure_ascii=False, indent=2)
         except OSError as e:
             print(f"[контакты] не сохранилось: {e!r}")
 
@@ -374,10 +377,11 @@ def send_discord(target, text, names=()):
         title = _title(hwnd)
         print(f"[сообщения] Discord: «{before}» -> «{title}» (ищу {target!r})")
         if not _title_has(title, [target, *names]):
-            if title == before or chat_name(title).lower() in ("discord", "друзья", "friends", ""):
+            if chat_name(title).lower() in ("discord", "друзья", "friends", ""):
                 _keys("esc")
                 raise SendError(f"Не нашла в Discord чат с {target} — ничего не отправила.")
-            raise NeedApproval(title, chat_name(title))      # чат открыт — пусть человек подтвердит
+            # открылся чат (или этот чат уже был открыт) с другим именем — пусть человек подтвердит
+            raise NeedApproval(title, chat_name(title))
         _type_and_send(hwnd, text)
         print(f"[сообщения] Discord: отправлено {target}: {text!r}")
     finally:

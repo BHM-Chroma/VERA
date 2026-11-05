@@ -624,8 +624,11 @@ class Brain:
             if any(w in self.cfg["yes_words"] for w in words):
                 try:
                     await asyncio.to_thread(messenger.send_discord_approved, req["title"], req["text"])
-                    if req.get("contact") and req.get("chat"):
-                        req["contact"]["discord_title"] = req["chat"]   # в следующий раз узнает сама
+                    if req.get("chat"):                                 # в следующий раз узнает сама
+                        if req.get("contact"):
+                            req["contact"]["discord_title"] = req["chat"]
+                        if req.get("target"):
+                            self.contacts.titles[req["target"].lower()] = req["chat"]
                         self.contacts.save()
                     await self.say(f"Отправила в Discord ({req['chat']}).")
                 except messenger.SendError as e:
@@ -656,7 +659,8 @@ class Brain:
     async def _msg_send(self, req):
         who, name = self._msg_who(req), messenger.NAMES[req["messenger"]]
         c = req["contact"] or {}
-        names = [n for n in (c.get("name", ""), c.get("discord_title", ""), req["who"]) if n]
+        names = [n for n in (c.get("name", ""), c.get("discord_title", ""), req["who"],
+                             self.contacts.titles.get((req["target"] or "").lower(), "")) if n]
         try:
             await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names)
             await self.say(f"Отправила в {name} ({who}).")
