@@ -29,6 +29,7 @@ import websearch
 import reminders
 import spotify
 import spotify_ui
+import messenger
 import usercmds
 
 from paths import BASE_DIR
@@ -117,6 +118,9 @@ class Brain:
         self.spotify = spotify.Spotify()
         self.pending_spotify = 0.0     # до этого времени ждём Client ID в чате
         self.search = None             # {"query", "items", "until"} — открыто окошко со ссылками
+        self.contacts = messenger.Contacts()
+        self.msg_confirm = True        # «Спрашивать перед отправкой сообщений» (из меню персонажа)
+        self.pending_msg = None        # (запрос, срок, этап: "confirm"/"which"/"text") — сообщение ждёт ответа
 
     # ---------- связь с персонажем ----------
 
@@ -195,6 +199,8 @@ class Brain:
             await self.broadcast({"type": "window_info", "reply_to": msg.get("id"), "window": info})
         elif kind == "voice_settings":
             # «Не слушать» и чувствительность — из меню персонажа
+            if "msg_confirm" in msg:
+                self.msg_confirm = bool(msg["msg_confirm"])
             lst = getattr(self, "listener", None)
             muted = bool(msg.get("muted", False))
             if lst is not None:
@@ -282,7 +288,7 @@ class Brain:
                     self.last_interaction = now
                 return
             in_dialog = now - self.last_interaction < self.cfg["voice"]["conversation_window_sec"] \
-                or any(p and now < p[1] for p in (self.pending_teach, self.pending_remind))
+                or any(p and now < p[1] for p in (self.pending_teach, self.pending_remind, self.pending_msg))
             if self.cfg["voice"]["require_wake_word"] and not has_alias and not in_dialog:
                 return
             print(f"[Ты, голосом]: {text}")
@@ -309,6 +315,10 @@ class Brain:
             if now < deadline:
                 await self.say("Хорошо, не буду.")
                 return
+
+        # сообщение ждёт ответа: «да» / «в дискорд» / сам текст
+        if self.pending_msg and await self._msg_pending(original, cmd, now):
+            return
 
         # ответ на «нашла несколько — какую открыть?»
         if self.pending_choice:
@@ -340,6 +350,8 @@ class Brain:
         # свои команды («запомни команду …») и напоминания («напомни через …», «таймер на …»)
         raw = " ".join(w for w in text.split() if not self._is_alias(w))
         raw_orig = " ".join(w for w in original.split() if not self._is_alias(w.lower()))
+        if await self._message_flow(original_noalias(original, self), cmd, now):
+            return
         if await self._user_command_flow(raw_orig, cmd, now):
             return
         if await self._spotify_flow(original, raw, cmd, now):
@@ -533,6 +545,112 @@ class Brain:
         except spotify.SpotifyError as e:
             await self.say(str(e))
         return True
+
+    # ---------- контакты и сообщения ----------
+
+    async def _message_flow(self, text, cmd, now):
+        add = messenger.parse_add(text)
+        if add:
+            name, acc = add
+            if not name:
+                await self.say("Как зовут контакт? Например: «запомни контакт Лёша дискорд shadow».")
+            elif not acc:
+                await self.say(f"Скажи ещё, где искать {name}: «запомни контакт {name} дискорд ник» "
+                               "(можно телеграм ник или ватсап номер).", duration=7.0)
+            else:
+                c = self.contacts.upsert(name, acc)
+                await self.say(f"Запомнила: {messenger.describe(c)}.")
+            return True
+        m = messenger.DEL_RE.match(text.strip(" .!?"))
+        if m:
+            c = self.contacts.remove(m.group("name").strip())
+            await self.say(f"Забыла контакт {c['name']}." if c else f"Контакта «{m.group('name')}» у меня нет.")
+            return True
+        if messenger.LIST_RE.search(cmd):
+            items = self.contacts.items
+            if not items:
+                await self.say("Контактов пока нет. Скажи: «запомни контакт Лёша дискорд shadow».")
+            else:
+                await self.say("Твои контакты: " + "; ".join(messenger.describe(c) for c in items) + ".",
+                               duration=min(14.0, 4.0 + 1.5 * len(items)))
+            return True
+        req = messenger.parse_send(text, self.contacts)
+        if not req:
+            return False
+        print(f"[сообщения] {req['messenger']} -> {req['who']!r} ({req['target']!r}): {req['text']!r}")
+        await self._msg_continue(req, now)
+        return True
+
+    def _msg_who(self, req):
+        return req["contact"]["name"] if req.get("contact") else req["who"]
+
+    async def _msg_continue(self, req, now):
+        who = self._msg_who(req)
+        if not req["messenger"]:
+            have = [messenger.NAMES[k] for k in ("discord", "telegram", "whatsapp") if (req["contact"] or {}).get(k)]
+            self.pending_msg = (req, now + 30, "which")
+            await self.say(f"{who}: куда написать — " + (" или ".join(have) if have else "в Discord") + "?")
+            return
+        if not req["target"]:
+            name = messenger.NAMES[req["messenger"]]
+            ru = {"discord": "дискорд ник", "telegram": "телеграм ник", "whatsapp": "ватсап номер"}[req["messenger"]]
+            await self.say(f"У контакта «{who}» нет {name}. Скажи: «запомни контакт {who} {ru}» — и повтори.",
+                           duration=7.0)
+            return
+        if not req["text"]:
+            self.pending_msg = (req, now + 40, "text")
+            await self.say(f"{who}: что написать?")
+            return
+        if self.msg_confirm:
+            self.pending_msg = (req, now + 30, "confirm")
+            await self.say(f"{messenger.NAMES[req['messenger']]}, {who}: «{req['text']}». Отправить? Скажи «да».",
+                           duration=8.0)
+            return
+        await self._msg_send(req)
+
+    async def _msg_pending(self, original, cmd, now):
+        req, deadline, stage = self.pending_msg
+        self.pending_msg = None
+        if now >= deadline:
+            return False
+        words = cmd.split()
+        if stage == "confirm":
+            if any(w in self.cfg["yes_words"] for w in words):
+                await self._msg_send(req)
+            else:
+                await self.say("Хорошо, не отправляю.")
+            return True
+        if any(w in cmd for w in CANCEL_WORDS) or any(w.startswith("отмен") for w in words):
+            await self.say("Хорошо, не отправляю.")
+            return True
+        if stage == "which":
+            m = next((messenger.messenger_of(w) for w in words if messenger.messenger_of(w)), None)
+            if not m:
+                return False               # это уже другая просьба
+            req["messenger"] = m
+            if req["contact"]:
+                req["target"] = req["contact"].get(m, "")
+            else:
+                req["target"] = req["who"]
+            await self._msg_continue(req, now)
+            return True
+        if stage == "text":
+            req["text"] = original_noalias(original, self).strip()
+            await self._msg_continue(req, now)
+            return True
+        return False
+
+    async def _msg_send(self, req):
+        who, name = self._msg_who(req), messenger.NAMES[req["messenger"]]
+        names = [n for n in ((req["contact"] or {}).get("name", ""), req["who"]) if n]
+        try:
+            await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names)
+            await self.say(f"Отправила в {name} ({who}).")
+        except messenger.SendError as e:
+            await self.say(str(e), duration=7.0)
+        except Exception as e:  # noqa: BLE001
+            print(f"[сообщения] ошибка: {e!r}")
+            await self.say(f"Не получилось отправить в {name}: {e}")
 
     # ---------- поиск в интернете ----------
 

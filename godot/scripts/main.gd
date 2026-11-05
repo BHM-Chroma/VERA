@@ -62,7 +62,8 @@ var _carry_ready := false             # плита уже стоит под не
 var _carry_top := Vector2.ZERO        # верх плиты в окне (пиксели)
 
 enum MenuId { CHAT, STATS, ON_TOP, RESET_POS, QUIT, WANDER, WANDER_NOW, HIDE, AUTOSTART, AUTOHIDE,
-	MUTE, SENS_LOW, SENS_NORMAL, SENS_HIGH, CALIBRATE, PTT_F8, PTT_RCTRL, PTT_RALT, PTT_XBUTTON, PTT_NONE }
+	MUTE, SENS_LOW, SENS_NORMAL, SENS_HIGH, CALIBRATE, PTT_F8, PTT_RCTRL, PTT_RALT, PTT_XBUTTON, PTT_NONE,
+	MSG_CONFIRM }
 const PTT_IDS := {MenuId.PTT_F8: "f8", MenuId.PTT_RCTRL: "rctrl", MenuId.PTT_RALT: "ralt",
 	MenuId.PTT_XBUTTON: "xbutton1", MenuId.PTT_NONE: "none"}
 
@@ -73,6 +74,7 @@ const MIC_ON_ICON := preload("res://assets/fx/mic_on.png")
 
 ## Микрофон: «не слушать» и чувствительность (0 — низкая, 1 — обычная, 2 — высокая).
 var mic_muted := false
+var msg_confirm := true               # «Спрашивать перед отправкой сообщений»
 var mic_sensitivity := 1
 var ptt_key := "f8"
 var _listen_state := "idle"     # от мозга: idle / listening (слышит речь) / thinking (распознаёт)
@@ -110,6 +112,7 @@ func _ready() -> void:
 	wanderer.set_enabled(bool(_settings.get_value("wander", "enabled", true)))
 	auto_hide = bool(_settings.get_value("background", "auto_hide", true))
 	mic_muted = bool(_settings.get_value("voice", "muted", false))
+	msg_confirm = bool(_settings.get_value("messages", "confirm", true))
 	mic_sensitivity = clampi(int(_settings.get_value("voice", "sensitivity", 1)), 0, 2)
 	ptt_key = String(_settings.get_value("voice", "ptt_key", "f8"))
 	if not ptt_key in PTT_IDS.values():
@@ -659,6 +662,7 @@ func _build_menu() -> void:
 	_mic_menu.add_item("Подстроиться под шум в комнате", MenuId.CALIBRATE)
 	_mic_menu.id_pressed.connect(_on_menu)
 	_menu.add_submenu_node_item("Микрофон", _mic_menu)
+	_menu.add_check_item("Спрашивать перед отправкой сообщений", MenuId.MSG_CONFIRM)
 	_menu.add_separator()
 	_menu.add_check_item("Поверх всех окон", MenuId.ON_TOP)
 	_menu.add_check_item("Гулять по экрану", MenuId.WANDER)
@@ -699,6 +703,12 @@ func _on_menu(id: int) -> void:
 			set_auto_hide(not auto_hide)
 		MenuId.MUTE:
 			set_mic_muted(not mic_muted)
+		MenuId.MSG_CONFIRM:
+			msg_confirm = not msg_confirm
+			_settings.set_value("messages", "confirm", msg_confirm)
+			_settings.save(SETTINGS_PATH)
+			_send_voice_settings()
+			say("Буду спрашивать перед отправкой." if msg_confirm else "Буду отправлять сразу, без вопроса.", 3.0)
 		MenuId.SENS_LOW, MenuId.SENS_NORMAL, MenuId.SENS_HIGH:
 			set_mic_sensitivity({MenuId.SENS_LOW: 0, MenuId.SENS_NORMAL: 1, MenuId.SENS_HIGH: 2}[id])
 		MenuId.PTT_F8, MenuId.PTT_RCTRL, MenuId.PTT_RALT, MenuId.PTT_XBUTTON, MenuId.PTT_NONE:
@@ -910,6 +920,7 @@ func _open_menu(at: Vector2i) -> void:
 	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOSTART), _autostart_enabled())
 	_menu.set_item_checked(_menu.get_item_index(MenuId.AUTOHIDE), auto_hide)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.MUTE), mic_muted)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.MSG_CONFIRM), msg_confirm)
 	for i in 3:
 		var mid: int = [MenuId.SENS_LOW, MenuId.SENS_NORMAL, MenuId.SENS_HIGH][i]
 		_mic_menu.set_item_checked(_mic_menu.get_item_index(mid), mic_sensitivity == i)
@@ -1087,7 +1098,8 @@ func _on_brain_connection(online: bool) -> void:
 
 func _send_voice_settings() -> void:
 	if brain.connected:
-		brain.send({"type": "voice_settings", "muted": mic_muted, "sensitivity": mic_sensitivity, "ptt_key": ptt_key})
+		brain.send({"type": "voice_settings", "muted": mic_muted, "sensitivity": mic_sensitivity, "ptt_key": ptt_key,
+			"msg_confirm": msg_confirm})
 
 
 ## «Не слушать»: мозг полностью отпускает микрофон. Запоминается между запусками.
