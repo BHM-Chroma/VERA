@@ -300,9 +300,9 @@ class SendError(Exception):
 class NeedApproval(Exception):
     """Чат открыт, но имя в окне не похоже на ник — спросить человека. title — что в окне, chat — имя чата."""
 
-    def __init__(self, title, chat):
+    def __init__(self, title, chat, messenger="discord"):
         super().__init__(title)
-        self.title, self.chat = title, chat
+        self.title, self.chat, self.messenger = title, chat, messenger
 
 
 def chat_name(title):
@@ -430,7 +430,146 @@ def send_discord_approved(title, text):
                 pass
 
 
-def send(messenger, target, text, names=()):
+# ---------- Telegram (web.telegram.org/a в браузере) ----------
+
+TG_COMPOSER_ID = "editable-message-text"     # поле «Сообщение» в Telegram Web A
+
+
+def telegram_url(target):
+    t = target.strip().lstrip("@")
+    digits = re.sub(r"[^\d]", "", t)
+    if re.fullmatch(r"\+?[\d\s()\-]{7,}", t):
+        addr = "tg://resolve?phone=" + digits
+    else:
+        addr = "tg://resolve?domain=" + t
+    import urllib.parse
+    return "https://web.telegram.org/a/#?tgaddr=" + urllib.parse.quote(addr, safe="")
+
+
+def _telegram_window():
+    for hwnd in _windows_of("chrome") + _windows_of("msedge") + _windows_of("firefox") + _windows_of("opera") \
+            + _windows_of("browser") + _windows_of("yandex"):
+        if _user32().IsWindowVisible(hwnd) and _title(hwnd).lower().lstrip("(0123456789) ").startswith("telegram"):
+            return hwnd
+    return None
+
+
+def _focus_composer(hwnd, wait=12.0):
+    """Найти поле «Сообщение» (UI Automation по id элемента) и поставить в него курсор. True — получилось."""
+    try:
+        import spotify_ui
+        uia, U = spotify_ui._automation()
+    except Exception as e:  # noqa: BLE001
+        print(f"[сообщения] UI Automation недоступна: {e!r}")
+        return False
+    cond = uia.CreatePropertyCondition(U.UIA_AutomationIdPropertyId, TG_COMPOSER_ID)
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        try:
+            el = uia.ElementFromHandle(hwnd).FindFirst(U.TreeScope_Descendants, cond)
+            if el:
+                el.SetFocus()
+                time.sleep(0.2)
+                return True
+        except Exception:  # noqa: BLE001 — страница ещё грузится
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def open_telegram_chat(target):
+    """Открыть чат по нику/номеру в Telegram Web. Возвращает окно браузера."""
+    url = telegram_url(target)
+    hwnd = _telegram_window()
+    old_clip = None
+    try:
+        old_clip = _clip_get()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if hwnd and _foreground(hwnd):
+            # та же вкладка: адрес -> Enter -> F5 (ссылку tgaddr Telegram читает при загрузке страницы)
+            _keys("ctrl+l")
+            time.sleep(0.2)
+            _clip_set(url)
+            _keys("ctrl+v")
+            time.sleep(0.15)
+            _keys("enter")
+            time.sleep(0.5)
+            _keys("f5")
+            print(f"[сообщения] Telegram: открываю {target} в той же вкладке")
+        else:
+            import webbrowser
+            webbrowser.open(url)
+            print(f"[сообщения] Telegram: открываю {target} в новой вкладке")
+            t0 = time.time()
+            while time.time() - t0 < 25:
+                time.sleep(0.5)
+                hwnd = _telegram_window()
+                if hwnd:
+                    break
+            if not hwnd:
+                raise SendError("Не дождалась Telegram в браузере. Открой web.telegram.org и войди в аккаунт.")
+            _foreground(hwnd)
+    finally:
+        if old_clip is not None:
+            try:
+                time.sleep(0.2)
+                _clip_set(old_clip)
+            except Exception:  # noqa: BLE001
+                pass
+    time.sleep(2.0)
+    return hwnd
+
+
+def _telegram_type(hwnd, text):
+    if not _foreground(hwnd):
+        raise SendError("Не смогла переключиться на Telegram — ничего не отправила.")
+    if not _focus_composer(hwnd):
+        raise SendError("Не нашла в Telegram поле для сообщения (чат не открылся?) — ничего не отправила.")
+    old_clip = None
+    try:
+        old_clip = _clip_get()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _type_and_send(hwnd, text)
+    finally:
+        if old_clip is not None:
+            try:
+                time.sleep(0.2)
+                _clip_set(old_clip)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def send_telegram(target, text, verified=False):
+    if not IS_WINDOWS:
+        raise SendError("Отправка работает только на Windows.")
+    if not target:
+        raise SendError("Не знаю ник в Telegram.")
+    hwnd = open_telegram_chat(target)
+    if not _focus_composer(hwnd):
+        raise SendError(f"Telegram не открыл чат с {target} (ник верный? вход в web.telegram.org выполнен?) — "
+                        "ничего не отправила.")
+    if not verified:
+        # заголовок вкладки всегда «Telegram» — проверить чат по нему нельзя, поэтому в первый раз спрашиваем
+        raise NeedApproval(_title(hwnd), "@" + target.lstrip("@"), "telegram")
+    _telegram_type(hwnd, text)
+    print(f"[сообщения] Telegram: отправлено {target}: {text!r}")
+
+
+def send_telegram_approved(text):
+    hwnd = _telegram_window()
+    if not hwnd:
+        raise SendError("Вкладка Telegram закрылась — ничего не отправила.")
+    _telegram_type(hwnd, text)
+    print(f"[сообщения] Telegram: отправлено после подтверждения: {text!r}")
+
+
+def send(messenger, target, text, names=(), verified=False):
     if messenger == "discord":
         return send_discord(target, text, names)
-    raise SendError(f"{NAMES.get(messenger, messenger)} пока не умею — сначала проверим Discord, потом добавлю.")
+    if messenger == "telegram":
+        return send_telegram(target, text, verified)
+    raise SendError(f"{NAMES.get(messenger, messenger)} пока не умею — сначала Discord и Telegram, WhatsApp следующим.")

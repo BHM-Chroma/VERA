@@ -623,6 +623,12 @@ class Brain:
         if stage == "approve_chat":
             if any(w in self.cfg["yes_words"] for w in words):
                 try:
+                    if req["messenger"] == "telegram":
+                        await asyncio.to_thread(messenger.send_telegram_approved, req["text"])
+                        self.contacts.titles["tg:" + req["target"].lower().lstrip("@")] = req["chat"]
+                        self.contacts.save()
+                        await self.say(f"Отправила в Telegram ({req['chat']}).")
+                        return True
                     await asyncio.to_thread(messenger.send_discord_approved, req["title"], req["text"])
                     if req.get("chat"):                                 # в следующий раз узнает сама
                         if req.get("contact"):
@@ -662,12 +668,17 @@ class Brain:
         names = [n for n in (c.get("name", ""), c.get("discord_title", ""), req["who"],
                              self.contacts.titles.get((req["target"] or "").lower(), "")) if n]
         try:
-            await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names)
+            verified = bool(self.contacts.titles.get("tg:" + (req["target"] or "").lower().lstrip("@")))
+            await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names, verified)
             await self.say(f"Отправила в {name} ({who}).")
         except messenger.NeedApproval as e:
             req["title"], req["chat"] = e.title, e.chat
             self.pending_msg = (req, time.time() + 30, "approve_chat")
-            await self.say(f"Открыла в Discord чат «{e.chat}». Это {who}? Скажи «да» — отправлю.", duration=8.0)
+            if e.messenger == "telegram":
+                await self.say(f"Открыла в Telegram чат {e.chat} — проверь, тот ли это человек. Скажи «да» — отправлю.",
+                               duration=8.0)
+            else:
+                await self.say(f"Открыла в {name} чат «{e.chat}». Это {who}? Скажи «да» — отправлю.", duration=8.0)
         except messenger.SendError as e:
             await self.say(str(e), duration=7.0)
         except Exception as e:  # noqa: BLE001
