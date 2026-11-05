@@ -620,6 +620,19 @@ class Brain:
             else:
                 await self.say("Хорошо, не отправляю.")
             return True
+        if stage == "approve_chat":
+            if any(w in self.cfg["yes_words"] for w in words):
+                try:
+                    await asyncio.to_thread(messenger.send_discord_approved, req["title"], req["text"])
+                    if req.get("contact") and req.get("chat"):
+                        req["contact"]["discord_title"] = req["chat"]   # в следующий раз узнает сама
+                        self.contacts.save()
+                    await self.say(f"Отправила в Discord ({req['chat']}).")
+                except messenger.SendError as e:
+                    await self.say(str(e), duration=7.0)
+            else:
+                await self.say("Хорошо, не отправляю.")
+            return True
         if any(w in cmd for w in CANCEL_WORDS) or any(w.startswith("отмен") for w in words):
             await self.say("Хорошо, не отправляю.")
             return True
@@ -642,10 +655,15 @@ class Brain:
 
     async def _msg_send(self, req):
         who, name = self._msg_who(req), messenger.NAMES[req["messenger"]]
-        names = [n for n in ((req["contact"] or {}).get("name", ""), req["who"]) if n]
+        c = req["contact"] or {}
+        names = [n for n in (c.get("name", ""), c.get("discord_title", ""), req["who"]) if n]
         try:
             await asyncio.to_thread(messenger.send, req["messenger"], req["target"], req["text"], names)
             await self.say(f"Отправила в {name} ({who}).")
+        except messenger.NeedApproval as e:
+            req["title"], req["chat"] = e.title, e.chat
+            self.pending_msg = (req, time.time() + 30, "approve_chat")
+            await self.say(f"Открыла в Discord чат «{e.chat}». Это {who}? Скажи «да» — отправлю.", duration=8.0)
         except messenger.SendError as e:
             await self.say(str(e), duration=7.0)
         except Exception as e:  # noqa: BLE001

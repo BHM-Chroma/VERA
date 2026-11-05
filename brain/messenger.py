@@ -294,6 +294,20 @@ class SendError(Exception):
     """Не получилось отправить — с понятной фразой."""
 
 
+class NeedApproval(Exception):
+    """Чат открыт, но имя в окне не похоже на ник — спросить человека. title — что в окне, chat — имя чата."""
+
+    def __init__(self, title, chat):
+        super().__init__(title)
+        self.title, self.chat = title, chat
+
+
+def chat_name(title):
+    """«@Mllcw - Discord» -> «Mllcw»; «Discord | @Mllcw» -> «Mllcw»."""
+    t = re.sub(r"\s*[-|–]\s*Discord\s*$|^\s*Discord\s*[-|–]\s*", "", title or "").strip()
+    return t.lstrip("@").strip() or (title or "").strip()
+
+
 # ---------- Discord ----------
 
 def _discord_window(timeout=25.0):
@@ -360,16 +374,49 @@ def send_discord(target, text, names=()):
         title = _title(hwnd)
         print(f"[сообщения] Discord: «{before}» -> «{title}» (ищу {target!r})")
         if not _title_has(title, [target, *names]):
-            _keys("esc")
-            raise SendError(f"Не уверена, что открыла чат с {target} (окно: «{title}») — ничего не отправила.")
-        if _user32().GetForegroundWindow() != hwnd:
-            raise SendError("Окно Discord потеряло фокус — ничего не отправила.")
-        _clip_set(text)
-        _keys("ctrl+v")
-        time.sleep(0.35)
-        _keys("enter")
-        time.sleep(0.3)
+            if title == before or chat_name(title).lower() in ("discord", "друзья", "friends", ""):
+                _keys("esc")
+                raise SendError(f"Не нашла в Discord чат с {target} — ничего не отправила.")
+            raise NeedApproval(title, chat_name(title))      # чат открыт — пусть человек подтвердит
+        _type_and_send(hwnd, text)
         print(f"[сообщения] Discord: отправлено {target}: {text!r}")
+    finally:
+        if old_clip is not None:
+            try:
+                time.sleep(0.2)
+                _clip_set(old_clip)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _type_and_send(hwnd, text):
+    if _user32().GetForegroundWindow() != hwnd:
+        raise SendError("Окно Discord потеряло фокус — ничего не отправила.")
+    _clip_set(text)
+    _keys("ctrl+v")
+    time.sleep(0.35)
+    _keys("enter")
+    time.sleep(0.3)
+
+
+def send_discord_approved(title, text):
+    """После «да»: чат уже открыт — проверяем, что это всё ещё он, и отправляем."""
+    if not IS_WINDOWS:
+        raise SendError("Отправка работает только на Windows.")
+    hwnd = _discord_window()
+    if not _foreground(hwnd):
+        raise SendError("Не смогла переключиться на Discord — ничего не отправила.")
+    now = _title(hwnd)
+    if now != title:
+        raise SendError(f"В Discord уже открыт другой чат («{now}») — ничего не отправила.")
+    old_clip = None
+    try:
+        old_clip = _clip_get()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _type_and_send(hwnd, text)
+        print(f"[сообщения] Discord: отправлено после подтверждения в «{title}»: {text!r}")
     finally:
         if old_clip is not None:
             try:
