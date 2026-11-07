@@ -103,6 +103,17 @@ func place_above(anchor: Vector2, visible := Rect2(-1e6, -1e6, 2e6, 2e6)) -> voi
 	position = Vector2(x, y)
 
 
+## Ставит окошко под точкой anchor (верх окошка — у anchor): когда она вниз головой.
+func place_below(anchor: Vector2, visible := Rect2(-1e6, -1e6, 2e6, 2e6)) -> void:
+	reset_size()
+	var area := get_viewport_rect().intersection(visible)
+	if area.size.x < size.x + 8.0:
+		area = get_viewport_rect()
+	var x := clampf(anchor.x - size.x * 0.5, area.position.x + 4.0, area.end.x - size.x - 4.0)
+	var y := clampf(anchor.y, area.position.y + 4.0, area.end.y - size.y - 4.0)
+	position = Vector2(x, y)
+
+
 func _process(delta: float) -> void:
 	if not visible:
 		return

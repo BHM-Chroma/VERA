@@ -418,7 +418,10 @@ func _place_bubble() -> void:
 	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
 	var wpos := DisplayServer.window_get_position()
 	var visible := Rect2(Vector2(scr.position - wpos), Vector2(scr.size))
-	bubble.place_above(Vector2(head.x, min(head.y, bbox.position.y) - 12.0), visible)
+	if character.upside_down:
+		bubble.place_below(Vector2(head.x, max(head.y, bbox.end.y) + 14.0), visible)
+	else:
+		bubble.place_above(Vector2(head.x, min(head.y, bbox.position.y) - 12.0), visible)
 
 
 ## Окно ловит мышь только внутри выпуклой оболочки вокруг костей (и облачка).
@@ -611,11 +614,15 @@ func _update_boredom(delta: float) -> void:
 		_fall_asleep()
 		return
 	# заскучала — садится прямо там, где стоит
-	if _idle_time >= bored_sit_after and character.current_pose == character.idle_animation \
-			and String(character.anim.current_animation) in [character.idle_animation, character.idle_animation + "_music"]:
+	if _idle_time >= bored_sit_after and character.is_standing() \
+			and String(character.anim.current_animation).to_lower().begins_with(character.current_pose.to_lower()):
 		character.screen_side = _screen_side()
-		# садится «прямо» (idle_sit_default), а если такой позы нет — как раньше
-		character.set_pose("idle_sit_default" if character.has_animation("idle_sit_default") else "idle_sit", 0.8)
+		# садится «прямо» (idle_sit_default или его вариант), а если таких поз нет — как раньше
+		var sits: Array[String] = []
+		for p in ["idle_sit_default", "idle_sit_default_Var_2"]:
+			if character.has_animation(p):
+				sits.append(p)
+		character.set_pose(sits.pick_random() if sits.size() > 0 else "idle_sit", 0.8)
 
 
 ## С какой стороны экрана она сейчас: -1 — левая половина, 1 — правая.
@@ -1235,7 +1242,7 @@ func _update_chat_icon(delta: float) -> void:
 			var head: Vector2 = m["head"]
 			_chat_icon_bbox = m["bbox"]
 			# слева от головы, на высоте значка микрофона; не помещается — справа, под микрофоном
-			var y := maxf(_chat_icon_bbox.position.y - 4.0, head.y - 70.0)
+			var y := head.y - 20.0 if character.upside_down else maxf(_chat_icon_bbox.position.y - 4.0, head.y - 70.0)
 			var pos := Vector2(head.x - 78.0 - _chat_icon.size.x, y)
 			if pos.x < 2.0:
 				pos = Vector2(head.x + 78.0, y + 46.0)
@@ -1291,7 +1298,7 @@ func _update_mic_icon(delta: float) -> void:
 	var head: Vector2 = m["head"]
 	var bbox: Rect2 = m["bbox"]
 	# справа от головы, чуть выше; если не помещается в окно — слева
-	var pos := Vector2(head.x + 78.0, max(bbox.position.y - 4.0, head.y - 70.0))
+	var pos := Vector2(head.x + 78.0, head.y - 20.0 if character.upside_down else max(bbox.position.y - 4.0, head.y - 70.0))
 	if pos.x + _mic_icon.size.x > window_size.x - 2:
 		pos.x = head.x - 78.0 - _mic_icon.size.x
 	pos.x = clampf(pos.x, 2.0, window_size.x - _mic_icon.size.x - 2.0)
@@ -1306,7 +1313,7 @@ func _on_brain_message(msg: Dictionary) -> void:
 	match String(msg.get("type", "")):
 		"say":
 			say(String(msg.get("text", "")), float(msg.get("duration", -1.0)), bool(msg.get("urgent", false)))
-			if msg.has("anim") and character.current_pose == character.idle_animation:
+			if msg.has("anim") and character.is_standing():
 				character.play(String(msg.anim))
 		"anim":
 			var anim_name := String(msg.get("name", "idle"))
@@ -1314,7 +1321,7 @@ func _on_brain_message(msg: Dictionary) -> void:
 				wanderer.go_to_sleep()       # из любой позы — в idle_sleep в углу
 			elif anim_name == "idle" and wanderer.is_sleeping_pose():
 				wanderer.wake_up()
-			elif character.current_pose == character.idle_animation:
+			elif character.is_standing():
 				# разовые анимации (alarm и т.п.) — только когда стоит, а не сидит/лежит
 				character.play(anim_name)
 		"hotkey":

@@ -52,7 +52,16 @@ var screen_side := 1:
 		screen_side = v
 		_update_mirror()
 ## Позы, в которых ноги в Blender направлены влево: слева экрана их отражаем.
-const MIRROR_ON_LEFT := ["idle_sit"]
+const MIRROR_ON_LEFT := ["idle_sit", "idle_sit_on_wall_back"]
+## Вниз головой (сидит на верхнем крае экрана, как на потолке). Сбрасывается сменой позы.
+var upside_down := false:
+	set(v):
+		upside_down = v
+		_upside_pose = current_pose if v else ""
+		_update_mirror()
+var _upside_pose := ""
+## Стойки (стоит на месте): после разовых анимаций и в проверках «стоит ли она».
+const STAND_POSES := ["idle", "idle_var_2"]
 ## 0 — виден, 1 — исчез (эффект перемещения). Если есть экранный глитч (glitch_material) —
 ## исчезает через него, иначе — старым пиксельным рассыпанием в шейдерах модели.
 var vanish := 0.0:
@@ -68,7 +77,7 @@ var face_material: ShaderMaterial
 ## Голова следит за курсором, когда он рядом.
 var head_look: HeadLook
 ## В каких позах она смотрит на курсор (лёжа и во сне — нет).
-const LOOK_POSES := ["idle", "idle_sit", "idle_sit_default", "idle_sit_on_window", "drag_sit"]
+const LOOK_POSES := ["idle", "idle_var_2", "idle_sit", "idle_sit_default", "idle_sit_default_var_2", "idle_sit_on_window", "drag_sit"]
 
 var talking := false
 var _face_bone := -1
@@ -268,17 +277,28 @@ func set_pose(pose: String, blend := 0.25) -> bool:
 		pose_glitch.emit(current_pose, found)
 		blend = 0.0          # переключаемся сразу — рывок прячется под помехами
 	current_pose = found
+	if upside_down and found != _upside_pose:
+		upside_down = false          # взяли мышкой / уснула / перешла в другую позу — снова головой вверх
 	_update_mirror()
 	return play(_pose_variant(found), blend)
 
 
 func can_look() -> bool:
-	return current_pose.to_lower() in LOOK_POSES
+	return current_pose.to_lower() in LOOK_POSES and not upside_down
+
+
+## Стоит (в одной из стоек), а не сидит/лежит.
+func is_standing() -> bool:
+	return current_pose.to_lower() in STAND_POSES
 
 
 func _update_mirror() -> void:
 	var mirrored: bool = screen_side < 0 and current_pose.to_lower() in MIRROR_ON_LEFT
 	scale.x = -1.0 if mirrored else 1.0
+	# вниз головой = поворот на 180° в плоскости экрана (обе оси отражены — не зеркало)
+	scale.y = -1.0 if upside_down else 1.0
+	if upside_down:
+		scale.x = -scale.x
 
 
 ## Играет музыка: вместо позы — её вариант «…_music», если он есть в модели.
@@ -379,6 +399,10 @@ func center_in_view(cam: Camera3D) -> void:
 	var px_per_unit := vp.y / cam.size
 	var bbox: Rect2 = m["bbox"]
 	position.x = (vp.x * 0.5 - bbox.get_center().x) / px_per_unit
+	if upside_down:
+		# перевёрнута — ставим по центру окна по вертикали (иначе уходит за нижний край)
+		position.y = (bbox.get_center().y - vp.y * 0.5) / px_per_unit
+		return
 	# низ позы (с запасом на подошвы и волосы) не должен уходить за край окна
 	var overflow := bbox.end.y - (vp.y - 16.0)
 	if overflow > 0.0:

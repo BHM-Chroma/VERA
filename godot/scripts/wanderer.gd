@@ -17,8 +17,15 @@ extends Node
 @export var seat_pad := -14.0
 ## Вероятность сесть на окно (если подходящее окно есть).
 @export var window_chance := 0.5
-@export var corner_poses: PackedStringArray = ["idle", "idle_sit", "idle_sit_default", "idle_lying"]
+@export var corner_poses: PackedStringArray = ["idle", "idle_Var_2", "idle_sit", "idle_sit_default",
+	"idle_sit_default_Var_2", "idle_sit_var3", "idle_lying"]
 @export var window_pose := "idle_sit_on_Window"
+## Сидит на углу верхнего края окна боком, ноги свисают за край окна.
+@export var window_corner_pose := "idle_sit_on_wall_back"
+## Сидит вниз головой на верхнем крае экрана.
+@export var ceiling_pose := "idle_sit_var3"
+## Вероятность «потолка» (верх экрана вниз головой).
+@export var ceiling_chance := 0.25
 ## Запас над головой для облачка (пиксели).
 @export var head_room := 80.0
 
@@ -114,8 +121,11 @@ func wander(force_corner := false) -> void:
 	await _fade(1.0)
 
 	var placed := false
-	if not force_corner and character.has_animation(window_pose) and randf() < window_chance:
+	var roll := randf()
+	if not force_corner and character.has_animation(window_pose) and roll < window_chance:
 		placed = await _try_place_on_window()
+	elif not force_corner and character.has_animation(ceiling_pose) and roll < window_chance + ceiling_chance:
+		placed = await place_on_ceiling()
 	if not placed:
 		await place_in_corner()
 
@@ -168,9 +178,12 @@ func _fade(to: float) -> void:
 
 
 ## Ставит позу без перехода и ждёт, пока скелет обновится.
-func _apply_pose(pose: String) -> Dictionary:
+func _apply_pose(pose: String, upside := false) -> Dictionary:
+	character.upside_down = false
 	if not character.set_pose(pose, 0.0):
 		character.set_pose(character.idle_animation, 0.0)
+	if upside:
+		character.upside_down = true
 	await get_tree().process_frame
 	await get_tree().process_frame
 	character.center_in_view(main.camera)
@@ -213,6 +226,29 @@ func place_in_corner(pose := "", side := 0) -> void:
 	_log("угол: поза %s, сторона %d, экран %s, окно (%d, %d), кости %s" % [character.current_pose, side, str(r), x, y, str(bbox)])
 
 
+# ---------- вниз головой на верхнем крае экрана ----------
+
+## Садится вниз головой на верхний край экрана (как на потолок), в случайном месте по ширине.
+func place_on_ceiling() -> bool:
+	var side := -_last_side if randf() < 0.75 else _last_side
+	_last_side = side
+	character.screen_side = side
+	var m := await _apply_pose(ceiling_pose, true)
+	if m.is_empty():
+		return false
+	var bbox: Rect2 = m["bbox"]
+	var r := _screen_rect()
+	var margin := 60
+	var min_x := r.position.x + margin - int(bbox.position.x)
+	var max_x := r.end.x - margin - int(bbox.end.x)
+	var x := randi_range(min_x, max_x) if max_x > min_x else min_x
+	# верх перевёрнутой позы (то, чем она «сидит») — вплотную к верхнему краю экрана
+	var y := r.position.y - int(bbox.position.y - foot_pad)
+	DisplayServer.window_set_position(Vector2i(x, y))
+	_log("потолок: поза %s, экран %s, окно (%d, %d), кости %s" % [character.current_pose, str(r), x, y, str(bbox)])
+	return true
+
+
 # ---------- сидение на окне ----------
 
 func _try_place_on_window() -> bool:
@@ -252,7 +288,12 @@ func _place_on_window(w: Dictionary, seat_x := -1) -> bool:
 	if win.size.x < 300 or _is_own_window(win):
 		return false
 
-	var m := await _apply_pose(window_pose)
+	# при перемещении иногда садится на угол окна боком (ноги свисают за край)
+	var corner := seat_x < 0 and character.has_animation(window_corner_pose) and randf() < 0.5
+	var corner_side := 1 if randf() < 0.5 else -1
+	if corner:
+		character.screen_side = corner_side   # у левого угла — отражена, ноги свисают влево
+	var m := await _apply_pose(window_corner_pose if corner else window_pose)
 	var seat: Vector2 = m["seat"]
 	var bbox: Rect2 = m["bbox"]
 	var scr := _screen_for(win)
@@ -267,6 +308,8 @@ func _place_on_window(w: Dictionary, seat_x := -1) -> bool:
 	if max_x <= min_x:
 		return false
 	var seat_screen_x := randi_range(min_x, max_x) if seat_x < 0 else clampi(seat_x, min_x, max_x)
+	if corner:
+		seat_screen_x = win.end.x - 28 if corner_side > 0 else win.position.x + 28
 	var pos := Vector2i(seat_screen_x - int(seat.x), win.position.y - int(seat.y + seat_pad))
 	DisplayServer.window_set_position(pos)
 
