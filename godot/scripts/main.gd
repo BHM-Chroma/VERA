@@ -71,6 +71,7 @@ const TRAY_ICON := preload("res://assets/fx/tray.png")
 const TRAY_ICON_MUTED := preload("res://assets/fx/tray_muted.png")
 const MIC_OFF_ICON := preload("res://assets/fx/mic_off.png")
 const MIC_ON_ICON := preload("res://assets/fx/mic_on.png")
+const CHAT_ICON := preload("res://assets/fx/chat.png")
 
 ## Микрофон: «не слушать» и чувствительность (0 — низкая, 1 — обычная, 2 — высокая).
 var mic_muted := false
@@ -81,6 +82,10 @@ var _listen_state := "idle"     # от мозга: idle / listening (слыши�
 var _mic_menu: PopupMenu
 var _mic_icon: TextureRect
 var _mic_icon_timer := 0.0
+var _chat_icon: TextureRect            # кнопка «открыть чат» — видна, когда мышь рядом с ней
+var _chat_icon_linger := 0.0
+var _chat_icon_timer := 0.0
+var _chat_icon_bbox := Rect2()
 const RUN_KEY := "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 
 ## Работа в фоне: спрятана по просьбе (значок у часов) / сама спряталась (полноэкранная игра, видео).
@@ -132,6 +137,7 @@ func _ready() -> void:
 	_start_brain_if_bundled()
 	_build_tray()
 	_build_mic_icon()
+	_build_chat_icon()
 	_build_glitch()
 	_startup_peek()
 
@@ -397,6 +403,7 @@ func _process(delta: float) -> void:
 	if bubble.visible:
 		_place_bubble()
 	_update_mic_icon(delta)
+	_update_chat_icon(delta)
 
 
 ## Облачко держится над головой, в какой бы позе она ни была.
@@ -434,6 +441,8 @@ func _update_passthrough() -> void:
 		extra.append(bubble.get_global_rect())
 	if _mic_icon and _mic_icon.visible:
 		extra.append(_mic_icon.get_global_rect().grow(4.0))
+	if _chat_icon and _chat_icon.visible:
+		extra.append(_chat_icon.get_global_rect().grow(4.0))
 	if notes:
 		extra.append_array(notes.areas())
 	for r in extra:
@@ -452,6 +461,11 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed and _chat_icon and _chat_icon.visible and _chat_icon.modulate.a > 0.3 \
+					and _chat_icon.get_global_rect().grow(4.0).has_point(mb.position):
+				get_viewport().set_input_as_handled()
+				_toggle_chat()
+				return
 			if mb.pressed:
 				if _sleeping or _sleep_requested:
 					_request_wake()   # спит — клик её будит
@@ -644,10 +658,10 @@ func _on_poke() -> void:
 
 func _build_menu() -> void:
 	_menu = PopupMenu.new()
-	_menu.add_item("Написать сообщение", MenuId.CHAT)
+	_menu.add_item("Написать сообщение (F10)", MenuId.CHAT)
 	_menu.add_item("Состояние ПК", MenuId.STATS)
 	_menu.add_separator()
-	_menu.add_check_item("Не слушать (микрофон выключен)", MenuId.MUTE)
+	_menu.add_check_item("Не слушать — микрофон выключен (F9)", MenuId.MUTE)
 	_mic_menu = PopupMenu.new()
 	_mic_menu.add_radio_check_item("Чувствительность: низкая (шумно вокруг)", MenuId.SENS_LOW)
 	_mic_menu.add_radio_check_item("Чувствительность: обычная", MenuId.SENS_NORMAL)
@@ -732,8 +746,44 @@ func _build_chat_window() -> void:
 	_chat_window.transparent = false
 	_chat_window.close_requested.connect(_chat_window.hide)
 
+	# тот же стиль, что у её реплик: тёмный фон, розовая рамка, пиксельный шрифт
+	var th := Theme.new()
+	var pf := SpeechBubble.pixel_font()
+	if pf:
+		th.default_font = pf
+		th.default_font_size = 16
+	var field := StyleBoxFlat.new()
+	field.bg_color = Color("#2a2232")
+	field.border_color = Color("#d31e5a")
+	field.set_border_width_all(1)
+	field.content_margin_left = 8
+	field.content_margin_right = 8
+	th.set_stylebox("normal", "LineEdit", field)
+	th.set_stylebox("focus", "LineEdit", field)
+	th.set_color("font_color", "LineEdit", Color("#f4e8ff"))
+	th.set_color("font_placeholder_color", "LineEdit", Color("#f4e8ff80"))
+	th.set_color("caret_color", "LineEdit", Color("#ff5aaa"))
+	var btn_n := StyleBoxFlat.new()
+	btn_n.bg_color = Color("#d31e5a")
+	btn_n.content_margin_left = 10
+	btn_n.content_margin_right = 10
+	var btn_h := btn_n.duplicate()
+	btn_h.bg_color = Color("#ff5aaa")
+	th.set_stylebox("normal", "Button", btn_n)
+	th.set_stylebox("hover", "Button", btn_h)
+	th.set_stylebox("pressed", "Button", btn_h)
+	th.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	th.set_color("font_color", "Button", Color.WHITE)
+	th.set_color("font_hover_color", "Button", Color.WHITE)
+	_chat_window.theme = th
+
 	var bg := Panel.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var bg_style := StyleBoxFlat.new()
+	bg_style.bg_color = Color("#1b1622")
+	bg_style.border_color = Color("#d31e5a")
+	bg_style.set_border_width_all(2)
+	bg.add_theme_stylebox_override("panel", bg_style)
 	_chat_window.add_child(bg)
 
 	var box := HBoxContainer.new()
@@ -1154,6 +1204,67 @@ func _build_mic_icon() -> void:
 	_update_tray_icon()
 
 
+func _build_chat_icon() -> void:
+	_chat_icon = TextureRect.new()
+	_chat_icon.texture = CHAT_ICON
+	_chat_icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_chat_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_chat_icon.stretch_mode = TextureRect.STRETCH_SCALE
+	_chat_icon.custom_minimum_size = Vector2(40, 40)
+	_chat_icon.size = Vector2(40, 40)
+	_chat_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE   # клик ловим сами в _input
+	_chat_icon.tooltip_text = "Написать сообщение (F10)"
+	_chat_icon.modulate.a = 0.0
+	_chat_icon.visible = false
+	bubble.get_parent().add_child(_chat_icon)
+
+
+## Значок чата появляется, когда мышь рядом с ней, и плавно гаснет, когда уходит.
+func _update_chat_icon(delta: float) -> void:
+	if _chat_icon == null:
+		return
+	var can := _shown and not _sleeping and not _dragging and not _carry and character.vanish <= 0.01 \
+		and not wanderer.busy and not _chat_window.visible
+	_chat_icon_timer -= delta
+	if can and _chat_icon_timer <= 0.0:
+		_chat_icon_timer = 0.2
+		var m := character.pose_metrics(camera)
+		if not m.is_empty():
+			var head: Vector2 = m["head"]
+			_chat_icon_bbox = m["bbox"]
+			# слева от головы, на высоте значка микрофона; не помещается — справа, под микрофоном
+			var y := maxf(_chat_icon_bbox.position.y - 4.0, head.y - 70.0)
+			var pos := Vector2(head.x - 78.0 - _chat_icon.size.x, y)
+			if pos.x < 2.0:
+				pos = Vector2(head.x + 78.0, y + 46.0)
+			pos.x = clampf(pos.x, 2.0, window_size.x - _chat_icon.size.x - 2.0)
+			pos.y = clampf(pos.y, 2.0, window_size.y - _chat_icon.size.y - 2.0)
+			_chat_icon.position = pos
+	var mouse := Vector2(DisplayServer.mouse_get_position() - DisplayServer.window_get_position())
+	var near := can and (_chat_icon_bbox.grow(30.0).has_point(mouse) \
+		or (_chat_icon.visible and _chat_icon.get_rect().grow(10.0).has_point(mouse)))
+	if near:
+		_chat_icon_linger = 1.5
+	else:
+		_chat_icon_linger -= delta
+	var want := can and _chat_icon_linger > 0.0
+	var target := 0.9 if want else 0.0
+	_chat_icon.modulate.a = move_toward(_chat_icon.modulate.a, target, delta * 5.0)
+	var vis := _chat_icon.modulate.a > 0.01
+	if vis != _chat_icon.visible:
+		_chat_icon.visible = vis
+		_pt_timer = 0.0      # значок должен войти в область окна, иначе Windows его обрежет
+
+
+func _toggle_chat() -> void:
+	if _chat_window.visible:
+		_chat_window.hide()
+	else:
+		attention()
+		glitch_pulse(0.2, 0.08)
+		_open_chat()
+
+
 func _update_mic_icon(delta: float) -> void:
 	if _mic_icon == null:
 		return
@@ -1204,6 +1315,12 @@ func _on_brain_message(msg: Dictionary) -> void:
 			elif character.current_pose == character.idle_animation:
 				# разовые анимации (alarm и т.п.) — только когда стоит, а не сидит/лежит
 				character.play(anim_name)
+		"hotkey":
+			match String(msg.get("name", "")):
+				"mute":
+					set_mic_muted(not mic_muted)
+				"chat":
+					_toggle_chat()
 		"search_results":
 			_show_search(String(msg.get("query", "")), msg.get("items", []))
 		"search_close":

@@ -124,6 +124,39 @@ class Brain:
 
     # ---------- связь с персонажем ----------
 
+    # ---------- горячие клавиши (работают в любом окне) ----------
+
+    HOTKEYS = {"mute": 0x78, "chat": 0x79}     # F9 — не слушать / слушать, F10 — окно чата
+
+    async def hotkey_loop(self):
+        if sys.platform != "win32":
+            return
+        import ctypes
+        user32 = ctypes.windll.user32
+        prev = {}
+        while True:
+            await asyncio.sleep(0.05)
+            for name, vk in self.HOTKEYS.items():
+                down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
+                if down and not prev.get(name):
+                    print(f"[клавиши] {name}")
+                    await self.broadcast({"type": "hotkey", "name": name})
+                    if name == "chat":
+                        asyncio.create_task(self._focus_chat_window())
+                prev[name] = down
+
+    async def _focus_chat_window(self):
+        """Окно чата открывает персонаж, но Windows не даёт фоновой программе забрать фокус —
+        выводим окно вперёд сами, чтобы можно было сразу печатать."""
+        import ctypes
+        user32 = ctypes.windll.user32
+        for _ in range(10):
+            await asyncio.sleep(0.1)
+            hwnd = user32.FindWindowW(None, "Сообщение для VERONIKA")
+            if hwnd and user32.IsWindowVisible(hwnd):
+                await asyncio.to_thread(messenger._foreground, hwnd)
+                return
+
     async def broadcast(self, msg):
         data = json.dumps(msg, ensure_ascii=False)
         for ws in list(self.clients):
@@ -1231,6 +1264,7 @@ class Brain:
             self.apps.refresh()   # список программ — в фоне (если старше суток)
             apps_task = asyncio.create_task(self.apps_loop())
             rem_task = asyncio.create_task(self.reminders_loop())
+            keys_task = asyncio.create_task(self.hotkey_loop())
             listener = await asyncio.to_thread(self.start_voice)
             await self.quit_event.wait()
             await self.broadcast({"type": "quit"})
@@ -1241,6 +1275,7 @@ class Brain:
             music_task.cancel()
             apps_task.cancel()
             rem_task.cancel()
+            keys_task.cancel()
             if listener:
                 listener.stop(wait=False)
 
