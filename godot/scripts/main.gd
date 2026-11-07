@@ -748,10 +748,7 @@ func _build_chat_window() -> void:
 
 	# тот же стиль, что у её реплик: тёмный фон, розовая рамка, пиксельный шрифт
 	var th := Theme.new()
-	var pf := SpeechBubble.pixel_font()
-	if pf:
-		th.default_font = pf
-		th.default_font_size = 16
+	# шрифт табло здесь не ставим: в нём нет части строчных русских букв, а печатаешь ты строчными
 	var field := StyleBoxFlat.new()
 	field.bg_color = Color("#2a2232")
 	field.border_color = Color("#d31e5a")

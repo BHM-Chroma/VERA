@@ -10,7 +10,7 @@ const ACCENT := Color("#ff5aaa")
 const TEXT := Color("#f4e8ff")
 const CUT := 12.0               ## размер срезанного угла (левый верхний и правый нижний)
 
-@export var max_width := 340.0
+@export var max_width := 380.0
 @export var top_margin := 8.0
 ## Скорость печати (букв в секунду). Длинные фразы печатаются быстрее — не дольше type_max_time.
 @export var chars_per_second := 45.0
@@ -27,19 +27,21 @@ static var _font: Font = null
 static var _font_checked := false
 
 
-## Пиксельный шрифт (если он есть в сборке) — один на всех: облачко, окно чата.
+## Шрифт «табло» Digit Tech 16 (если он есть в сборке). В нём нет части строчных русских букв,
+## поэтому текст с ним показываем ЗАГЛАВНЫМИ — как на электронном табло.
 static func pixel_font() -> Font:
 	if not _font_checked:
 		_font_checked = true
 		if ResourceLoader.exists(FONT_PATH):
-			var f = load(FONT_PATH)
-			if f is FontFile:
-				f.antialiasing = TextServer.FONT_ANTIALIASING_NONE
-				f.hinting = TextServer.HINTING_NONE
-				f.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
-				f.generate_mipmaps = false
-			_font = f
+			_font = load(FONT_PATH)
 	return _font
+
+
+## Текст для табло: заглавные, а кавычек-«ёлочек» и длинного тире в шрифте нет.
+static func lcd_text(text: String) -> String:
+	if pixel_font() == null:
+		return text
+	return text.to_upper().replace("«", "\"").replace("»", "\"").replace("—", "-").replace("–", "-")
 
 
 func _ready() -> void:
@@ -58,8 +60,8 @@ func _ready() -> void:
 	var f := pixel_font()
 	if f:
 		_label.add_theme_font_override("font", f)
-		_label.add_theme_font_size_override("font_size", 16)
-		_label.add_theme_constant_override("line_spacing", 3)
+		_label.add_theme_font_size_override("font_size", 20)
+		_label.add_theme_constant_override("line_spacing", 4)
 	else:
 		_label.add_theme_font_size_override("font_size", 15)
 	add_child(_label)
@@ -70,6 +72,7 @@ func _ready() -> void:
 ## Показать реплику. duration <= 0 — висит, пока не вызовут hide_bubble().
 ## Время показа отсчитывается после того, как текст допечатался.
 func say(text: String, duration := 4.0) -> void:
+	text = lcd_text(text)
 	_label.text = text
 	_label.custom_minimum_size.x = 0
 	visible = true
