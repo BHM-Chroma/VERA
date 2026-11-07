@@ -75,6 +75,7 @@ const CHAT_ICON := preload("res://assets/fx/chat.png")
 
 ## Микрофон: «не слушать» и чувствительность (0 — низкая, 1 — обычная, 2 — высокая).
 var mic_muted := false
+var _greeted := false                # первое «Я тут!» — при запуске, дальше — «Я снова с тобой»
 var msg_confirm := true               # «Спрашивать перед отправкой сообщений»
 var mic_sensitivity := 1
 var ptt_key := "f8"
@@ -731,7 +732,7 @@ func _on_menu(id: int) -> void:
 			if brain.connected:
 				brain.send({"type": "voice_calibrate"})
 			else:
-				say("Мозг не подключён — микрофон не работает.", 3.0)
+				say("Я ещё не до конца проснулась — микрофон пока не работает.", 3.0)
 		MenuId.QUIT:
 			_quit()
 
@@ -748,7 +749,10 @@ func _build_chat_window() -> void:
 
 	# тот же стиль, что у её реплик: тёмный фон, розовая рамка, пиксельный шрифт
 	var th := Theme.new()
-	# шрифт табло здесь не ставим: в нём нет части строчных русских букв, а печатаешь ты строчными
+	var pf := SpeechBubble.pixel_font()
+	if pf:
+		th.default_font = pf
+		th.default_font_size = 20
 	var field := StyleBoxFlat.new()
 	field.bg_color = Color("#2a2232")
 	field.border_color = Color("#d31e5a")
@@ -938,7 +942,7 @@ func _send_chat(text: String) -> void:
 		brain.send({"type": "chat", "text": text})
 		say("…", 0.0)
 	else:
-		say("Мой «мозг» не запущен. Запусти brain.py, и я смогу ответить.", 5.0)
+		say("Я ещё не до конца проснулась — подожди немного и напиши снова.", 4.0)
 
 
 func set_wander(value: bool) -> void:
@@ -949,7 +953,7 @@ func set_wander(value: bool) -> void:
 
 func _show_stats() -> void:
 	if _stats.is_empty():
-		say("Пока не знаю: «мозг» не прислал данные.", 3.0)
+		say("Пока не знаю — данные ещё не пришли.", 3.0)
 		return
 	var lines := PackedStringArray()
 	lines.append("CPU: %d%%" % int(_stats.get("cpu", 0)))
@@ -1138,7 +1142,8 @@ func say(text: String, duration := -1.0, urgent := false) -> void:
 func _on_brain_connection(online: bool) -> void:
 	if online:
 		_send_voice_settings()
-		say("Мозг подключён. Пиши мне — микрофон выключен." if mic_muted else "Мозг подключён. Слушаю!", 2.5)
+		say(("Я тут! Микрофон выключен — пиши мне." if mic_muted else "Я тут! Слушаю.") if not _greeted else "Я снова с тобой.", 2.5)
+		_greeted = true
 
 
 # ---------- микрофон ----------

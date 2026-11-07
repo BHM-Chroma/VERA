@@ -3,7 +3,7 @@ extends PanelContainer
 ## Окошко с репликой над головой персонажа: прямоугольник со срезанными углами,
 ## пиксельный шрифт и текст, который «печатается» по буквам.
 
-const FONT_PATH := "res://assets/fonts/digit_tech_16.ttf"
+const FONT_PATH := "res://assets/fonts/handjet.ttf"   # Handjet (OFL), «цифровой» шрифт с кириллицей
 const BG := Color("#1b1622f2")
 const BORDER := Color("#d31e5a")
 const ACCENT := Color("#ff5aaa")
@@ -27,21 +27,13 @@ static var _font: Font = null
 static var _font_checked := false
 
 
-## Шрифт «табло» Digit Tech 16 (если он есть в сборке). В нём нет части строчных русских букв,
-## поэтому текст с ним показываем ЗАГЛАВНЫМИ — как на электронном табло.
+## «Цифровой» шрифт Handjet (если он есть в сборке) — один на всех: окошко реплик и окно чата.
 static func pixel_font() -> Font:
 	if not _font_checked:
 		_font_checked = true
 		if ResourceLoader.exists(FONT_PATH):
 			_font = load(FONT_PATH)
 	return _font
-
-
-## Текст для табло: заглавные, а кавычек-«ёлочек» и длинного тире в шрифте нет.
-static func lcd_text(text: String) -> String:
-	if pixel_font() == null:
-		return text
-	return text.to_upper().replace("«", "\"").replace("»", "\"").replace("—", "-").replace("–", "-")
 
 
 func _ready() -> void:
@@ -60,8 +52,8 @@ func _ready() -> void:
 	var f := pixel_font()
 	if f:
 		_label.add_theme_font_override("font", f)
-		_label.add_theme_font_size_override("font_size", 20)
-		_label.add_theme_constant_override("line_spacing", 4)
+		_label.add_theme_font_size_override("font_size", 22)
+		_label.add_theme_constant_override("line_spacing", 1)
 	else:
 		_label.add_theme_font_size_override("font_size", 15)
 	add_child(_label)
@@ -72,7 +64,6 @@ func _ready() -> void:
 ## Показать реплику. duration <= 0 — висит, пока не вызовут hide_bubble().
 ## Время показа отсчитывается после того, как текст допечатался.
 func say(text: String, duration := 4.0) -> void:
-	text = lcd_text(text)
 	_label.text = text
 	_label.custom_minimum_size.x = 0
 	visible = true
