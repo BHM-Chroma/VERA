@@ -178,9 +178,17 @@ def _top_level_windows():
     return result
 
 
-def window_at(x, y, tol=45):
+def _short(hwnd):
+    t = ctypes.create_unicode_buffer(64)
+    user32.GetWindowTextW(hwnd, t, 64)
+    r = _rect(hwnd)
+    return f"{_process_name(hwnd)} «{t.value[:30]}» {r.left},{r.top} {r.right - r.left}x{r.bottom - r.top}"
+
+
+def window_at(x, y, tol=45, why=None):
     """Окно, верхний край которого рядом с точкой (x, y): |y - верх| <= tol и x над окном.
-    Если точку закрывает другое окно, лежащее выше, — None (его край не виден)."""
+    Если точку закрывает другое окно, лежащее выше, — None (его край не виден).
+    why — список, куда пишем, почему не подошло (для журнала)."""
     if not IS_WINDOWS:
         return None
     for hwnd in _top_level_windows():
@@ -192,6 +200,8 @@ def window_at(x, y, tol=45):
         info = describe(hwnd)
         if info and abs(y - info["y"]) <= tol:
             return info
+        if why is not None and len(why) < 4:
+            why.append(_short(hwnd) + (" — далеко от верха" if info else " — не подходит"))
         # точка внутри другого настоящего окна (обычного или развёрнутого) — дальше не смотрим
         if y >= r.top and (info or (user32.IsZoomed(hwnd) and not _cloaked(hwnd))):
             return None

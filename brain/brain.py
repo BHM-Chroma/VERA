@@ -219,9 +219,11 @@ class Brain:
             self.follow_hwnd = int(msg.get("hwnd") or 0)
             self._follow_last = "start"
         elif kind == "window_at":
-            info = windows_info.window_at(int(msg.get("x", 0)), int(msg.get("y", 0)), int(msg.get("tol", 45)))
+            x, y = int(msg.get("x", 0)), int(msg.get("y", 0))
+            why = []
+            info = windows_info.window_at(x, y, int(msg.get("tol", 45)), why)
             print(f"[окна] отпустили у окна: {info['process']} «{info['title'][:40]}»" if info
-                  else "[окна] отпустили не у края окна")
+                  else f"[окна] отпустили не у края окна ({x},{y}): " + ("; ".join(why) or "под точкой окон нет"))
             await self.broadcast({"type": "window_info", "reply_to": msg.get("id"), "window": info})
         elif kind == "window_query":
             hwnd = msg.get("hwnd")
